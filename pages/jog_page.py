@@ -77,9 +77,9 @@ class JogPage(QWidget):
         title.setObjectName('pageTitle')
         root.addWidget(title)
 
-        # ── Distance chips ────────────────────────────────────────────────────
+        # Distance chips
         dc = QHBoxLayout()
-        dc.addWidget(QLabel('Step:').setStyleSheet if False else QLabel('Step:'))
+        dc.addWidget(QLabel('Step:'))
         dc.addSpacing(8)
         self._dist = _ChipBar(DISTANCES, default_idx=2)
         dc.addWidget(self._dist)
@@ -88,7 +88,7 @@ class JogPage(QWidget):
         div = QFrame(); div.setFrameShape(QFrame.HLine)
         root.addWidget(div)
 
-        # ── Jog panels ────────────────────────────────────────────────────────
+        # Jog panels
         panels = QHBoxLayout()
         panels.setSpacing(16)
         panels.addWidget(self._build_xy(), 3)
@@ -125,7 +125,6 @@ class JogPage(QWidget):
         b_xm = self._jbtn('◀')
         b_xp = self._jbtn('▶')
 
-        # Centre origin label
         centre = QLabel('XY')
         centre.setAlignment(Qt.AlignCenter)
         centre.setStyleSheet(
@@ -138,6 +137,14 @@ class JogPage(QWidget):
         g.addWidget(b_xp,    1, 2)
         g.addWidget(b_ym,    2, 1)
 
+        # Stretch rows and columns evenly
+        g.setRowStretch(0, 1)
+        g.setRowStretch(1, 1)
+        g.setRowStretch(2, 1)
+        g.setColumnStretch(0, 1)
+        g.setColumnStretch(1, 1)
+        g.setColumnStretch(2, 1)
+
         outer.addLayout(g)
 
         # Zero buttons row
@@ -148,6 +155,7 @@ class JogPage(QWidget):
                             ('Zero XY','G92 X0 Y0')]:
             b = QPushButton(label)
             b.setMinimumHeight(46)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(lambda _, c=cmd: self._grbl.send(c))
             zr.addWidget(b)
         outer.addLayout(zr)
@@ -192,6 +200,7 @@ class JogPage(QWidget):
 
         bz = QPushButton('Zero Z')
         bz.setMinimumHeight(46)
+        bz.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         bz.clicked.connect(lambda: self._grbl.send('G92 Z0'))
         lay.addWidget(bz)
 

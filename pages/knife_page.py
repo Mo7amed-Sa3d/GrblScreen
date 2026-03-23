@@ -21,12 +21,12 @@ class KnifePage(QWidget):
         root.setContentsMargins(16, 8, 16, 8)
         root.setSpacing(12)
 
-        # ── Title ─────────────────────────────────────────────────────────────
+        # Title
         title = QLabel('Knife Control')
         title.setObjectName('pageTitle')
         root.addWidget(title)
 
-        # ── Status badge ──────────────────────────────────────────────────────
+        # Status badge
         self._badge = QLabel('▲  KNIFE  UP')
         self._badge.setAlignment(Qt.AlignCenter)
         self._badge.setMinimumHeight(70)
@@ -36,7 +36,7 @@ class KnifePage(QWidget):
         )
         root.addWidget(self._badge)
 
-        # ── Force slider ──────────────────────────────────────────────────────
+        # Force slider
         force_card = QWidget()
         force_card.setObjectName('card')
         fc = QVBoxLayout(force_card)
@@ -63,6 +63,7 @@ class KnifePage(QWidget):
         self._slider.setValue(1000)
         self._slider.setTickInterval(200)
         self._slider.setTickPosition(QSlider.TicksBelow)
+        self._slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._slider.valueChanged.connect(
             lambda v: self._force_val.setText(str(v))
         )
@@ -76,7 +77,7 @@ class KnifePage(QWidget):
         div = QFrame(); div.setFrameShape(QFrame.HLine)
         root.addWidget(div)
 
-        # ── Down / Up buttons ─────────────────────────────────────────────────
+        # Down / Up buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
 
@@ -103,7 +104,7 @@ class KnifePage(QWidget):
         btn_row.addWidget(self._b_up)
         root.addLayout(btn_row)
 
-        # ── Dwell controls ────────────────────────────────────────────────────
+        # Dwell controls
         dwell_row = QHBoxLayout()
         dwell_row.setSpacing(16)
 

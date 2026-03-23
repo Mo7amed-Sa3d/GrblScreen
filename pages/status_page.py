@@ -51,7 +51,7 @@ class StatusPage(QWidget):
         root.setContentsMargins(12, 8, 12, 8)
         root.setSpacing(10)
 
-        # ── Title row ─────────────────────────────────────────────────────────
+        # Title row
         top = QHBoxLayout()
         title = QLabel('Status & Homing')
         title.setObjectName('pageTitle')
@@ -67,7 +67,7 @@ class StatusPage(QWidget):
         top.addWidget(self._feed_lbl)
         root.addLayout(top)
 
-        # ── Position cards ────────────────────────────────────────────────────
+        # Position cards
         pos = QHBoxLayout()
         pos.setSpacing(8)
         self._ax_x = _AxisCard('X')
@@ -79,11 +79,11 @@ class StatusPage(QWidget):
             pos.addWidget(w)
         root.addLayout(pos)
 
-        # ── Divider ───────────────────────────────────────────────────────────
+        # Divider
         div = QFrame(); div.setFrameShape(QFrame.HLine)
         root.addWidget(div)
 
-        # ── Action buttons ────────────────────────────────────────────────────
+        # Action buttons grid
         grid = QGridLayout()
         grid.setSpacing(8)
 
@@ -91,6 +91,7 @@ class StatusPage(QWidget):
             b = QPushButton(label)
             b.setProperty('role', role)
             b.setMinimumHeight(72)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             b.clicked.connect(cb)
             return b
 
@@ -111,6 +112,14 @@ class StatusPage(QWidget):
         grid.addWidget(self._b_zero_xy,  1, 1)
         grid.addWidget(self._b_zero_z,   1, 2)
         grid.addWidget(self._b_reset,    1, 3)
+
+        # Stretch rows and columns to fill available space evenly
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 1)
+        grid.setColumnStretch(3, 1)
 
         root.addLayout(grid)
         root.addStretch()

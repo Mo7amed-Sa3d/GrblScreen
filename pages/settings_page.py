@@ -150,9 +150,11 @@ class SettingsPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         inner = QWidget()
         form  = QFormLayout(inner)
-        form.setSpacing(8); form.setLabelAlignment(Qt.AlignRight)
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignRight)
 
         SETTINGS = [
             ('$32', 'Laser mode  (1=knife)', '1'),

@@ -18,7 +18,7 @@ def main():
         with open(qss) as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
-        pass
+        print("Warning: style.qss not found, using default.")
 
     grbl = GrblConnection()
     win  = MainWindow(grbl)
