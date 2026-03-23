@@ -1,186 +1,198 @@
 # pages/jog_page.py
-# Jog controls for X, Y, and Feed (Z) axes
+# Jogging — XY compass + Z feed, speed/distance chip selectors
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QComboBox, QFrame, QSizePolicy
+    QLabel, QPushButton, QButtonGroup, QSizePolicy, QFrame
 )
-from PyQt5.QtCore import Qt, pyqtSlot
+from PyQt5.QtCore import Qt
 
 
-# Available jog distances (mm) and speeds (mm/min)
-JOG_DISTANCES = ['0.1', '1', '10', '50', '100']
-JOG_SPEEDS_XY = ['500', '1000', '2000', '3000', '5000']
-JOG_SPEEDS_Z  = ['200', '500', '1000', '2000']
+# Distance chips (mm)
+DISTANCES = ['0.1', '1', '10', '50', '100']
+# Speed chips (mm/min)
+XY_SPEEDS = ['500', '1000', '3000', '6000']
+Z_SPEEDS  = ['200', '500', '1000', '2000']
+
+
+class _ChipBar(QWidget):
+    """Horizontal row of exclusive toggle buttons ('chips')."""
+    def __init__(self, options, default_idx=1, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        self._grp = QButtonGroup(self)
+        self._grp.setExclusive(True)
+
+        for i, text in enumerate(options):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setMinimumHeight(40)
+            b.setMinimumWidth(64)
+            b.setStyleSheet(self._style(False))
+            self._grp.addButton(b, i)
+            lay.addWidget(b)
+
+        lay.addStretch()
+        self._grp.buttons()[default_idx].setChecked(True)
+        self._grp.buttonToggled.connect(self._on_toggle)
+        self._update_styles()
+
+    def _style(self, active):
+        if active:
+            return ('QPushButton { background:#ff8c00; color:#1a1a1a; '
+                    'border:1px solid #ff8c00; border-radius:6px; '
+                    'font-weight:bold; font-size:13px; }')
+        return ('QPushButton { background:#2d2d2d; color:#aaaaaa; '
+                'border:1px solid #505050; border-radius:6px; '
+                'font-size:13px; }')
+
+    def _on_toggle(self):
+        self._update_styles()
+
+    def _update_styles(self):
+        for b in self._grp.buttons():
+            b.setStyleSheet(self._style(b.isChecked()))
+
+    @property
+    def value(self):
+        return float(self._grp.checkedButton().text())
 
 
 class JogPage(QWidget):
     def __init__(self, grbl, parent=None):
         super().__init__(parent)
+        self.setObjectName('page')
         self._grbl = grbl
-        self._build_ui()
+        self._build()
 
-    def _build_ui(self):
+    def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 8, 16, 8)
+        root.setContentsMargins(12, 8, 12, 8)
         root.setSpacing(10)
 
         title = QLabel('Jog')
         title.setObjectName('pageTitle')
         root.addWidget(title)
 
-        # ── Speed / distance selectors ────────────────────────────────────────
-        sel_row = QHBoxLayout()
-        sel_row.setSpacing(12)
-
-        sel_row.addWidget(QLabel('Distance (mm):'))
-        self._dist_combo = QComboBox()
-        self._dist_combo.addItems(JOG_DISTANCES)
-        self._dist_combo.setCurrentIndex(2)   # default 10mm
-        self._dist_combo.setMinimumWidth(100)
-        sel_row.addWidget(self._dist_combo)
-
-        sel_row.addSpacing(20)
-        sel_row.addWidget(QLabel('XY Speed:'))
-        self._xy_speed = QComboBox()
-        self._xy_speed.addItems(JOG_SPEEDS_XY)
-        self._xy_speed.setCurrentIndex(2)     # default 2000
-        self._xy_speed.setMinimumWidth(110)
-        sel_row.addWidget(self._xy_speed)
-
-        sel_row.addSpacing(20)
-        sel_row.addWidget(QLabel('Feed Speed:'))
-        self._z_speed = QComboBox()
-        self._z_speed.addItems(JOG_SPEEDS_Z)
-        self._z_speed.setCurrentIndex(1)      # default 500
-        self._z_speed.setMinimumWidth(110)
-        sel_row.addWidget(self._z_speed)
-
-        sel_row.addStretch()
-        root.addLayout(sel_row)
+        # ── Distance chips ────────────────────────────────────────────────────
+        dc = QHBoxLayout()
+        dc.addWidget(QLabel('Step:').setStyleSheet if False else QLabel('Step:'))
+        dc.addSpacing(8)
+        self._dist = _ChipBar(DISTANCES, default_idx=2)
+        dc.addWidget(self._dist)
+        root.addLayout(dc)
 
         div = QFrame(); div.setFrameShape(QFrame.HLine)
         root.addWidget(div)
 
-        # ── Jog panels row ────────────────────────────────────────────────────
+        # ── Jog panels ────────────────────────────────────────────────────────
         panels = QHBoxLayout()
-        panels.setSpacing(20)
+        panels.setSpacing(16)
+        panels.addWidget(self._build_xy(), 3)
+        panels.addWidget(self._build_z(),  1)
+        root.addLayout(panels, 1)
 
-        panels.addWidget(self._build_xy_panel(), 3)
-        panels.addWidget(self._build_z_panel(),  1)
+    def _jbtn(self, label):
+        b = QPushButton(label)
+        b.setProperty('role', 'jog')
+        b.setMinimumSize(80, 80)
+        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        return b
 
-        root.addLayout(panels)
-        root.addStretch()
-
-    # ── XY jog panel ──────────────────────────────────────────────────────────
-
-    def _build_xy_panel(self):
+    def _build_xy(self):
         w = QWidget()
-        grid = QGridLayout(w)
-        grid.setSpacing(8)
+        outer = QVBoxLayout(w)
+        outer.setSpacing(8)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        def jb(label, slot):
-            b = QPushButton(label)
-            b.setProperty('role', 'jog')
-            b.setMinimumSize(72, 72)
-            b.clicked.connect(slot)
-            return b
+        # Speed chips
+        sc = QHBoxLayout()
+        sc.addWidget(QLabel('XY:'))
+        sc.addSpacing(6)
+        self._xy_spd = _ChipBar(XY_SPEEDS, default_idx=2)
+        sc.addWidget(self._xy_spd)
+        outer.addLayout(sc)
 
-        # Arrow layout:
-        #       [Y+]
-        # [X-]  [·]  [X+]
-        #       [Y-]
-        grid.addWidget(jb('▲', self._jog_y_plus),  0, 1)
-        grid.addWidget(jb('◀', self._jog_x_minus), 1, 0)
+        # Compass grid
+        g = QGridLayout()
+        g.setSpacing(8)
 
+        b_yp = self._jbtn('▲')
+        b_ym = self._jbtn('▼')
+        b_xm = self._jbtn('◀')
+        b_xp = self._jbtn('▶')
+
+        # Centre origin label
         centre = QLabel('XY')
         centre.setAlignment(Qt.AlignCenter)
-        centre.setStyleSheet('color:#555; font-size:14px;')
-        grid.addWidget(centre, 1, 1)
+        centre.setStyleSheet(
+            'color:#555; font-size:14px; font-weight:bold;'
+        )
 
-        grid.addWidget(jb('▶', self._jog_x_plus),  1, 2)
-        grid.addWidget(jb('▼', self._jog_y_minus), 2, 1)
+        g.addWidget(b_yp,    0, 1)
+        g.addWidget(b_xm,    1, 0)
+        g.addWidget(centre,  1, 1)
+        g.addWidget(b_xp,    1, 2)
+        g.addWidget(b_ym,    2, 1)
 
-        # Zero buttons
-        z_row = QHBoxLayout()
-        bx = QPushButton('Zero X')
-        bx.clicked.connect(lambda: self._grbl.send('G92 X0'))
-        by = QPushButton('Zero Y')
-        by.clicked.connect(lambda: self._grbl.send('G92 Y0'))
-        ba = QPushButton('Zero XY')
-        ba.clicked.connect(lambda: self._grbl.send('G92 X0 Y0'))
-        for b in (bx, by, ba):
-            b.setMinimumHeight(44)
-            z_row.addWidget(b)
+        outer.addLayout(g)
 
-        outer = QVBoxLayout()
-        outer.addWidget(w)
-        outer.addLayout(z_row)
+        # Zero buttons row
+        zr = QHBoxLayout()
+        zr.setSpacing(8)
+        for label, cmd in [('Zero X', 'G92 X0'),
+                            ('Zero Y', 'G92 Y0'),
+                            ('Zero XY','G92 X0 Y0')]:
+            b = QPushButton(label)
+            b.setMinimumHeight(46)
+            b.clicked.connect(lambda _, c=cmd: self._grbl.send(c))
+            zr.addWidget(b)
+        outer.addLayout(zr)
 
-        container = QWidget()
-        container.setLayout(outer)
-        return container
+        # Connect arrows
+        b_yp.clicked.connect(lambda: self._grbl.jog('Y', +self._dist.value, self._xy_spd.value))
+        b_ym.clicked.connect(lambda: self._grbl.jog('Y', -self._dist.value, self._xy_spd.value))
+        b_xm.clicked.connect(lambda: self._grbl.jog('X', -self._dist.value, self._xy_spd.value))
+        b_xp.clicked.connect(lambda: self._grbl.jog('X', +self._dist.value, self._xy_spd.value))
 
-    # ── Feed (Z) jog panel ────────────────────────────────────────────────────
+        return w
 
-    def _build_z_panel(self):
+    def _build_z(self):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(8)
-        lay.setAlignment(Qt.AlignTop)
+        lay.setContentsMargins(0, 0, 0, 0)
 
-        title = QLabel('Feed (Z)')
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet('color:#a0c4ff; font-size:15px; font-weight:bold;')
-        lay.addWidget(title)
+        # Speed chips
+        sc = QHBoxLayout()
+        sc.addWidget(QLabel('Z:'))
+        sc.addSpacing(6)
+        self._z_spd = _ChipBar(Z_SPEEDS, default_idx=1)
+        sc.addWidget(self._z_spd)
+        lay.addLayout(sc)
 
-        def jb(label, slot):
-            b = QPushButton(label)
-            b.setProperty('role', 'jog')
-            b.setMinimumSize(72, 72)
-            b.clicked.connect(slot)
-            return b
+        lbl = QLabel('FEED\n(Z)')
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setStyleSheet('color:#aaa; font-size:13px; font-weight:bold;')
+        lay.addWidget(lbl)
 
-        lay.addWidget(jb('▲\nFeed+', self._jog_z_plus))
-        lay.addSpacing(10)
-        lay.addWidget(jb('▼\nFeed−', self._jog_z_minus))
-        lay.addSpacing(14)
+        bfwd = self._jbtn('▲\n+')
+        brev = self._jbtn('▼\n−')
+        bfwd.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        brev.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        bfwd.clicked.connect(lambda: self._grbl.jog('Z', +self._dist.value, self._z_spd.value))
+        brev.clicked.connect(lambda: self._grbl.jog('Z', -self._dist.value, self._z_spd.value))
+
+        lay.addWidget(bfwd, 1)
+        lay.addWidget(brev, 1)
 
         bz = QPushButton('Zero Z')
-        bz.setMinimumHeight(44)
+        bz.setMinimumHeight(46)
         bz.clicked.connect(lambda: self._grbl.send('G92 Z0'))
         lay.addWidget(bz)
 
         return w
-
-    # ── Jog helpers ───────────────────────────────────────────────────────────
-
-    @property
-    def _dist(self):
-        return float(self._dist_combo.currentText())
-
-    @property
-    def _xy_spd(self):
-        return float(self._xy_speed.currentText())
-
-    @property
-    def _z_spd(self):
-        return float(self._z_speed.currentText())
-
-    def _jog_x_plus(self):
-        self._grbl.jog('X', +self._dist, self._xy_spd)
-
-    def _jog_x_minus(self):
-        self._grbl.jog('X', -self._dist, self._xy_spd)
-
-    def _jog_y_plus(self):
-        self._grbl.jog('Y', +self._dist, self._xy_spd)
-
-    def _jog_y_minus(self):
-        self._grbl.jog('Y', -self._dist, self._xy_spd)
-
-    def _jog_z_plus(self):
-        self._grbl.jog('Z', +self._dist, self._z_spd)
-
-    def _jog_z_minus(self):
-        self._grbl.jog('Z', -self._dist, self._z_spd)

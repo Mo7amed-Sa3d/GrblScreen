@@ -1,236 +1,200 @@
 # main_window.py
-# Main application window — status bar, nav bar, page stack
+# Application shell — header, 4 tabs, E-stop
 
 import os
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStackedWidget, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QTime
 from PyQt5.QtGui  import QFont
 
-from pages.dashboard     import DashboardPage, STATE_MAP
+from grbl_connection import STATE_MAP
+from pages.status_page   import StatusPage
 from pages.jog_page      import JogPage
 from pages.knife_page    import KnifePage
-from pages.paper_page    import PaperPage
-from pages.console_page  import ConsolePage
 from pages.settings_page import SettingsPage
-from pages.wifi_page     import WifiPage
-from pages.system_page   import SystemPage
 
 
-PAGES = [
-    ('Dashboard', '⌂',  DashboardPage),
-    ('Jog',       '✛',  JogPage),
-    ('Knife',     '⚡',  KnifePage),
-    ('Paper',     '↕',  PaperPage),
-    ('Console',   '▶',  ConsolePage),
-    ('Settings',  '⚙',  SettingsPage),
-    ('WiFi',      '📶',  WifiPage),
-    ('System',    '🖥',  SystemPage),
+# (label, icon, page class)
+TABS = [
+    ('Status',   '⊙', StatusPage),
+    ('Jog',      '✛', JogPage),
+    ('Knife',    '⚡', KnifePage),
+    ('Settings', '⚙', SettingsPage),
 ]
-
-STYLE_DIR = os.path.join(os.path.dirname(__file__), 'styles')
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, grbl, app):
+    def __init__(self, grbl):
         super().__init__()
-        self._grbl  = grbl
-        self._app   = app
-        self._dark  = True    # current theme state
-        self._nav_buttons = []
+        self._grbl = grbl
+        self._tabs = []
 
         self.setWindowTitle('Cutter Screen')
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.showFullScreen()
 
-        self._build_ui()
-        self._connect_signals()
-        QTimer.singleShot(500, self._auto_connect)
+        self._build()
+        self._wire()
+        QTimer.singleShot(600, self._auto_connect)
+
+        # Clock timer
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._tick_clock)
+        self._clock.start()
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
-    def _build_ui(self):
-        central = QWidget()
-        central.setObjectName('centralWidget')
-        self.setCentralWidget(central)
+    def _build(self):
+        root_w = QWidget()
+        root_w.setObjectName('root')
+        self.setCentralWidget(root_w)
 
-        root = QVBoxLayout(central)
+        root = QVBoxLayout(root_w)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_status_bar())
+        root.addWidget(self._mk_header())
 
         self._stack = QStackedWidget()
         root.addWidget(self._stack, 1)
 
-        self._pages = {}
-        for label, icon, cls in PAGES:
-            # WiFi and System pages don't need grbl
-            if cls in (WifiPage, SystemPage):
-                page = cls()
-            else:
-                page = cls(grbl=self._grbl)
+        for label, icon, cls in TABS:
+            page = cls(grbl=self._grbl)
             self._stack.addWidget(page)
-            self._pages[label] = page
 
-        root.addWidget(self._build_nav_bar())
-        self._switch_page(0)
+        root.addWidget(self._mk_tabbar())
+        self._switch(0)
 
-    def _build_status_bar(self):
-        bar = QWidget()
-        bar.setObjectName('statusBar')
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(12, 0, 12, 0)
-        lay.setSpacing(8)
+    def _mk_header(self):
+        hdr = QWidget()
+        hdr.setObjectName('header')
+        hdr.setFixedHeight(58)
+        lay = QHBoxLayout(hdr)
+        lay.setContentsMargins(14, 0, 14, 0)
+        lay.setSpacing(10)
+
+        # Machine name
+        name = QLabel('✂  CUTTER')
+        name.setObjectName('machineLabel')
+        lay.addWidget(name)
+
+        lay.addSpacing(12)
 
         # State badge
-        self._state_badge = QLabel('NO CONN')
-        self._state_badge.setObjectName('stateLabel')
-        self._state_badge.setStyleSheet(
-            'background:#2c2c3e; color:#7f8c8d; font-size:15px; '
-            'font-weight:bold; padding:4px 14px; border-radius:6px;'
+        self._state_lbl = QLabel('NO CONN')
+        self._state_lbl.setObjectName('stateNone')
+        lay.addWidget(self._state_lbl)
+
+        lay.addSpacing(10)
+
+        # Position mini-display
+        self._pos_lbl = QLabel('X  —      Y  —      Z  —')
+        self._pos_lbl.setStyleSheet(
+            'font-family:"Roboto Mono","Courier New",monospace;'
+            'font-size:13px; color:#aaaaaa;'
         )
-        lay.addWidget(self._state_badge)
-        lay.addSpacing(8)
-
-        # Position
-        self._pos_label = QLabel('X:  0.000   Y:  0.000   Z:  0.000')
-        self._pos_label.setObjectName('posLabel')
-        lay.addWidget(self._pos_label, 1)
-
-        # Feed rate
-        self._feed_label = QLabel('F:  0')
-        self._feed_label.setObjectName('posLabel')
-        lay.addWidget(self._feed_label)
-        lay.addSpacing(8)
+        lay.addWidget(self._pos_lbl, 1)
 
         # Knife badge
-        self._knife_badge = QLabel('Knife: UP')
-        self._knife_badge.setStyleSheet(
-            'background:#1e8449; color:white; font-size:13px; '
-            'font-weight:bold; padding:4px 10px; border-radius:6px;'
-        )
-        lay.addWidget(self._knife_badge)
+        self._knife_lbl = QLabel('Knife: UP')
+        self._knife_lbl.setObjectName('knifeUp')
+        lay.addWidget(self._knife_lbl)
+
         lay.addSpacing(8)
 
-        # Dark/light toggle
-        self._theme_btn = QPushButton('☀')
-        self._theme_btn.setObjectName('themeButton')
-        self._theme_btn.setToolTip('Toggle dark/light mode')
-        self._theme_btn.clicked.connect(self._toggle_theme)
-        lay.addWidget(self._theme_btn)
-        lay.addSpacing(8)
+        # Clock
+        self._clock_lbl = QLabel('00:00')
+        self._clock_lbl.setStyleSheet('color:#666; font-size:13px; min-width:44px;')
+        lay.addWidget(self._clock_lbl)
+
+        lay.addSpacing(6)
 
         # E-STOP
-        estop = QPushButton('E-STOP')
-        estop.setObjectName('estopButton')
-        estop.clicked.connect(self._do_estop)
+        estop = QPushButton('E\nSTOP')
+        estop.setObjectName('estop')
+        estop.setFixedSize(64, 48)
+        estop.clicked.connect(self._estop)
         lay.addWidget(estop)
 
-        return bar
+        return hdr
 
-    def _build_nav_bar(self):
+    def _mk_tabbar(self):
         bar = QWidget()
-        bar.setObjectName('navBar')
+        bar.setObjectName('tabBar')
+        bar.setFixedHeight(76)
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        for idx, (label, icon, _) in enumerate(PAGES):
+        for idx, (label, icon, _) in enumerate(TABS):
             btn = QPushButton('%s\n%s' % (icon, label))
-            btn.setObjectName('navButton')
-            btn.setProperty('active', 'false')
+            btn.setObjectName('tab')
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            btn.clicked.connect(lambda checked, i=idx: self._switch_page(i))
+            btn.clicked.connect(lambda _, i=idx: self._switch(i))
             lay.addWidget(btn)
-            self._nav_buttons.append(btn)
+            self._tabs.append(btn)
 
         return bar
 
-    # ── Page switching ────────────────────────────────────────────────────────
-
-    def _switch_page(self, idx):
+    def _switch(self, idx):
         self._stack.setCurrentIndex(idx)
-        for i, btn in enumerate(self._nav_buttons):
-            btn.setProperty('active', 'true' if i == idx else 'false')
+        for i, btn in enumerate(self._tabs):
+            name = 'tabActive' if i == idx else 'tab'
+            btn.setObjectName(name)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
-    # ── Theme toggle ──────────────────────────────────────────────────────────
-
-    def _toggle_theme(self):
-        self._dark = not self._dark
-        self._apply_theme()
-
-    def _apply_theme(self):
-        name = 'dark.qss' if self._dark else 'light.qss'
-        path = os.path.join(STYLE_DIR, name)
-        try:
-            with open(path) as f:
-                self._app.setStyleSheet(f.read())
-        except FileNotFoundError:
-            pass
-        # Update toggle icon
-        self._theme_btn.setText('☀' if self._dark else '🌙')
-
     # ── Signals ───────────────────────────────────────────────────────────────
 
-    def _connect_signals(self):
+    def _wire(self):
         g = self._grbl
         g.state_changed.connect(self._on_state)
-        g.position_changed.connect(self._on_position)
-        g.feed_changed.connect(self._on_feed)
+        g.position_changed.connect(self._on_pos)
         g.knife_changed.connect(self._on_knife)
         g.connected.connect(lambda: self._on_state('Idle'))
         g.disconnected.connect(lambda: self._on_state('Disconnected'))
 
     @pyqtSlot(str)
     def _on_state(self, state):
-        label, colour = STATE_MAP.get(state, (state.upper(), '#7f8c8d'))
-        self._state_badge.setText(label)
-        self._state_badge.setStyleSheet(
-            'background:%s; color:white; font-size:15px; '
-            'font-weight:bold; padding:4px 14px; border-radius:6px;' % colour
-        )
+        label, obj = STATE_MAP.get(state, (state.upper(), 'stateNone'))
+        self._state_lbl.setText(label)
+        self._state_lbl.setObjectName(obj)
+        self._state_lbl.style().unpolish(self._state_lbl)
+        self._state_lbl.style().polish(self._state_lbl)
 
     @pyqtSlot(float, float, float)
-    def _on_position(self, x, y, z):
-        self._pos_label.setText(
-            'X: %7.3f   Y: %7.3f   Z: %7.3f' % (x, y, z)
+    def _on_pos(self, x, y, z):
+        self._pos_lbl.setText(
+            'X %+7.2f   Y %+7.2f   Z %+7.2f' % (x, y, z)
         )
-
-    @pyqtSlot(float, float)
-    def _on_feed(self, feed, spindle):
-        self._feed_label.setText('F: %5.0f' % feed)
 
     @pyqtSlot(bool, int)
     def _on_knife(self, down, force):
-        """Fires immediately when M3/M5 is queued — no status report lag."""
         if down:
-            self._knife_badge.setText('Knife: DOWN  S%d' % force)
-            self._knife_badge.setStyleSheet(
-                'background:#922b21; color:white; font-size:13px; '
-                'font-weight:bold; padding:4px 10px; border-radius:6px;'
-            )
+            self._knife_lbl.setText('Knife: DN  S%d' % force)
+            self._knife_lbl.setObjectName('knifeDown')
         else:
-            self._knife_badge.setText('Knife: UP')
-            self._knife_badge.setStyleSheet(
-                'background:#1e8449; color:white; font-size:13px; '
-                'font-weight:bold; padding:4px 10px; border-radius:6px;'
-            )
+            self._knife_lbl.setText('Knife: UP')
+            self._knife_lbl.setObjectName('knifeUp')
+        self._knife_lbl.style().unpolish(self._knife_lbl)
+        self._knife_lbl.style().polish(self._knife_lbl)
+
+    def _tick_clock(self):
+        self._clock_lbl.setText(QTime.currentTime().toString('HH:mm'))
 
     # ── E-stop ────────────────────────────────────────────────────────────────
 
-    def _do_estop(self):
-        self._grbl.reset()        # Ctrl-X, also sets knife_down=False internally
+    def _estop(self):
+        self._grbl.reset()
         self._grbl.send('M5')
 
     # ── Auto-connect ──────────────────────────────────────────────────────────
 
     def _auto_connect(self):
         for name, desc in self._grbl.available_ports():
-            if 'ttyUSB' in name or 'ttyACM' in name or 'DLC32' in desc:
+            if any(x in name for x in ('DLC32', 'ttyUSB', 'ttyACM')):
                 if self._grbl.connect('/dev/%s' % name):
                     return

@@ -1,10 +1,9 @@
 # pages/knife_page.py
-# Knife solenoid control with force (S-value) slider
+# Knife control — force slider, down/up buttons, status badge
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QSlider, QSpinBox,
-    QGroupBox, QFrame
+    QLabel, QPushButton, QSlider, QSpinBox, QSizePolicy, QFrame
 )
 from PyQt5.QtCore import Qt, pyqtSlot
 
@@ -12,148 +11,159 @@ from PyQt5.QtCore import Qt, pyqtSlot
 class KnifePage(QWidget):
     def __init__(self, grbl, parent=None):
         super().__init__(parent)
+        self.setObjectName('page')
         self._grbl = grbl
-        self._build_ui()
-        # Connect the dedicated knife signal — fires immediately on send
+        self._build()
         self._grbl.knife_changed.connect(self._on_knife)
 
-    def _build_ui(self):
+    def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 8, 16, 8)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
+        # ── Title ─────────────────────────────────────────────────────────────
         title = QLabel('Knife Control')
         title.setObjectName('pageTitle')
         root.addWidget(title)
 
         # ── Status badge ──────────────────────────────────────────────────────
-        self._status = QLabel('Knife: UP')
-        self._status.setAlignment(Qt.AlignCenter)
-        self._status.setStyleSheet(
-            'background:#1e8449; color:white; font-size:22px; '
-            'font-weight:bold; padding:10px; border-radius:10px;'
+        self._badge = QLabel('▲  KNIFE  UP')
+        self._badge.setAlignment(Qt.AlignCenter)
+        self._badge.setMinimumHeight(70)
+        self._badge.setStyleSheet(
+            'background:#2e7d32; color:white; font-size:22px; '
+            'font-weight:bold; border-radius:10px;'
         )
-        root.addWidget(self._status)
+        root.addWidget(self._badge)
 
         # ── Force slider ──────────────────────────────────────────────────────
-        force_box = QGroupBox('Knife Force  (S value sent with M3)')
-        force_lay = QVBoxLayout(force_box)
+        force_card = QWidget()
+        force_card.setObjectName('card')
+        fc = QVBoxLayout(force_card)
+        fc.setContentsMargins(14, 10, 14, 10)
+        fc.setSpacing(8)
+
+        force_top = QHBoxLayout()
+        lbl_force = QLabel('Knife Force')
+        lbl_force.setObjectName('cardTitle')
+        self._force_val = QLabel('1000')
+        self._force_val.setStyleSheet(
+            'font-size:20px; font-weight:bold; color:#ff8c00;'
+        )
+        force_top.addWidget(lbl_force)
+        force_top.addStretch()
+        force_top.addWidget(self._force_val)
+        fc.addLayout(force_top)
 
         slider_row = QHBoxLayout()
-        lbl_min = QLabel('0')
-        lbl_min.setStyleSheet('color:#7f8c8d;')
-        lbl_max = QLabel('1000')
-        lbl_max.setStyleSheet('color:#7f8c8d;')
-
-        self._force_slider = QSlider(Qt.Horizontal)
-        self._force_slider.setRange(0, 1000)
-        self._force_slider.setValue(1000)
-        self._force_slider.setTickInterval(100)
-        self._force_slider.setTickPosition(QSlider.TicksBelow)
-        self._force_slider.valueChanged.connect(self._on_slider)
-
-        slider_row.addWidget(lbl_min)
-        slider_row.addWidget(self._force_slider, 1)
-        slider_row.addWidget(lbl_max)
-
-        self._force_lbl = QLabel('Force: 1000')
-        self._force_lbl.setAlignment(Qt.AlignCenter)
-        self._force_lbl.setStyleSheet(
-            'font-size:18px; font-weight:bold; color:#a0c4ff;'
+        lbl0 = QLabel('0');   lbl0.setStyleSheet('color:#666;')
+        lbl1 = QLabel('1000'); lbl1.setStyleSheet('color:#666;')
+        self._slider = QSlider(Qt.Horizontal)
+        self._slider.setRange(0, 1000)
+        self._slider.setValue(1000)
+        self._slider.setTickInterval(200)
+        self._slider.setTickPosition(QSlider.TicksBelow)
+        self._slider.valueChanged.connect(
+            lambda v: self._force_val.setText(str(v))
         )
+        slider_row.addWidget(lbl0)
+        slider_row.addWidget(self._slider, 1)
+        slider_row.addWidget(lbl1)
+        fc.addLayout(slider_row)
 
-        force_lay.addLayout(slider_row)
-        force_lay.addWidget(self._force_lbl)
-        root.addWidget(force_box)
-
-        # ── Main knife buttons ────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(16)
-
-        self._btn_down = QPushButton('▼  KNIFE DOWN')
-        self._btn_down.setProperty('role', 'knife')
-        self._btn_down.setMinimumHeight(90)
-        self._btn_down.clicked.connect(self._knife_down)
-
-        self._btn_up = QPushButton('▲  KNIFE UP')
-        self._btn_up.setProperty('role', 'knife')
-        self._btn_up.setMinimumHeight(90)
-        self._btn_up.clicked.connect(self._grbl.knife_up_cmd)
-
-        btn_row.addWidget(self._btn_down)
-        btn_row.addWidget(self._btn_up)
-        root.addLayout(btn_row)
+        root.addWidget(force_card)
 
         div = QFrame(); div.setFrameShape(QFrame.HLine)
         root.addWidget(div)
 
-        # ── Dwell time controls ───────────────────────────────────────────────
-        dwell_box = QGroupBox('Dwell Times')
-        dwell_lay = QHBoxLayout(dwell_box)
+        # ── Down / Up buttons ─────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
 
-        dwell_lay.addWidget(QLabel('Down dwell (ms):'))
-        self._dwell_down = QSpinBox()
-        self._dwell_down.setRange(0, 2000)
-        self._dwell_down.setValue(50)
-        self._dwell_down.setSingleStep(10)
-        self._dwell_down.setMinimumHeight(44)
-        self._dwell_down.setMinimumWidth(100)
-        dwell_lay.addWidget(self._dwell_down)
+        self._b_down = QPushButton('▼  KNIFE DOWN')
+        self._b_down.setProperty('role', 'knife')
+        self._b_down.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._b_down.setMinimumHeight(90)
+        self._b_down.clicked.connect(self._knife_down)
 
-        dwell_lay.addSpacing(30)
-        dwell_lay.addWidget(QLabel('Up dwell (ms):'))
+        self._b_up = QPushButton('▲  KNIFE UP')
+        self._b_up.setProperty('role', 'knife')
+        self._b_up.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._b_up.setMinimumHeight(90)
+        self._b_up.setStyleSheet(
+            'QPushButton { background:#1b5e20; border:1px solid #4caf50; '
+            'color:white; font-size:16px; font-weight:bold; '
+            'min-height:90px; border-radius:10px; }'
+            'QPushButton:hover { background:#2e7d32; }'
+            'QPushButton:pressed { background:#4caf50; }'
+        )
+        self._b_up.clicked.connect(self._knife_up)
+
+        btn_row.addWidget(self._b_down)
+        btn_row.addWidget(self._b_up)
+        root.addLayout(btn_row)
+
+        # ── Dwell controls ────────────────────────────────────────────────────
+        dwell_row = QHBoxLayout()
+        dwell_row.setSpacing(16)
+
+        dwell_row.addWidget(QLabel('Down dwell (ms):'))
+        self._dwell_dn = QSpinBox()
+        self._dwell_dn.setRange(0, 2000); self._dwell_dn.setValue(50)
+        self._dwell_dn.setSingleStep(10); self._dwell_dn.setMinimumWidth(100)
+        dwell_row.addWidget(self._dwell_dn)
+
+        dwell_row.addSpacing(10)
+        dwell_row.addWidget(QLabel('Up dwell (ms):'))
         self._dwell_up = QSpinBox()
-        self._dwell_up.setRange(0, 2000)
-        self._dwell_up.setValue(30)
-        self._dwell_up.setSingleStep(10)
-        self._dwell_up.setMinimumHeight(44)
-        self._dwell_up.setMinimumWidth(100)
-        dwell_lay.addWidget(self._dwell_up)
+        self._dwell_up.setRange(0, 2000); self._dwell_up.setValue(30)
+        self._dwell_up.setSingleStep(10); self._dwell_up.setMinimumWidth(100)
+        dwell_row.addWidget(self._dwell_up)
 
-        dwell_lay.addSpacing(30)
+        dwell_row.addStretch()
 
-        btn_test = QPushButton('Test Cycle')
-        btn_test.setProperty('role', 'warning')
-        btn_test.setMinimumHeight(44)
-        btn_test.clicked.connect(self._test_cycle)
-        dwell_lay.addWidget(btn_test)
-        dwell_lay.addStretch()
+        b_test = QPushButton('Test Cycle')
+        b_test.setProperty('role', 'warning')
+        b_test.setMinimumHeight(46)
+        b_test.clicked.connect(self._test)
+        dwell_row.addWidget(b_test)
 
-        root.addWidget(dwell_box)
+        root.addLayout(dwell_row)
         root.addStretch()
 
-    # ── Slots ─────────────────────────────────────────────────────────────────
-
-    def _on_slider(self, val):
-        self._force_lbl.setText('Force: %d' % val)
+    # ── Actions ───────────────────────────────────────────────────────────────
 
     def _knife_down(self):
-        force  = self._force_slider.value()
-        dwell  = self._dwell_down.value() / 1000.0
-        self._grbl.knife_down_cmd(force)
-        if dwell > 0:
-            self._grbl.send('G4 P%.3f' % dwell)
+        f = self._slider.value()
+        self._grbl.knife_down_cmd(f)
+        d = self._dwell_dn.value()
+        if d: self._grbl.send('G4 P%.3f' % (d / 1000.0))
 
-    def _test_cycle(self):
-        force   = self._force_slider.value()
-        down_s  = max(self._dwell_down.value() / 1000.0, 0.3)
-        up_s    = max(self._dwell_up.value()   / 1000.0, 0.2)
-        self._grbl.knife_down_cmd(force)
-        self._grbl.send('G4 P%.3f' % down_s)
+    def _knife_up(self):
         self._grbl.knife_up_cmd()
-        self._grbl.send('G4 P%.3f' % up_s)
+        d = self._dwell_up.value()
+        if d: self._grbl.send('G4 P%.3f' % (d / 1000.0))
+
+    def _test(self):
+        f  = self._slider.value()
+        dn = max(self._dwell_dn.value() / 1000.0, 0.3)
+        up = max(self._dwell_up.value() / 1000.0, 0.2)
+        self._grbl.knife_down_cmd(f)
+        self._grbl.send('G4 P%.3f' % dn)
+        self._grbl.knife_up_cmd()
+        self._grbl.send('G4 P%.3f' % up)
 
     @pyqtSlot(bool, int)
     def _on_knife(self, down, force):
         if down:
-            self._status.setText('Knife: DOWN  ▼  S%d' % force)
-            self._status.setStyleSheet(
-                'background:#922b21; color:white; font-size:22px; '
-                'font-weight:bold; padding:10px; border-radius:10px;'
+            self._badge.setText('▼  KNIFE  DOWN   S%d' % force)
+            self._badge.setStyleSheet(
+                'background:#b71c1c; color:white; font-size:22px; '
+                'font-weight:bold; border-radius:10px;'
             )
         else:
-            self._status.setText('Knife: UP  ▲')
-            self._status.setStyleSheet(
-                'background:#1e8449; color:white; font-size:22px; '
-                'font-weight:bold; padding:10px; border-radius:10px;'
+            self._badge.setText('▲  KNIFE  UP')
+            self._badge.setStyleSheet(
+                'background:#2e7d32; color:white; font-size:22px; '
+                'font-weight:bold; border-radius:10px;'
             )
