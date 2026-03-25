@@ -4,6 +4,7 @@
 # All serial writes are done in the main thread for safety.
 
 import os
+import sys
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QFrame,
@@ -55,7 +56,7 @@ class _FileLoaderThread(QThread):
                     break
                 self.send_line.emit(line)
                 self.progress.emit(i + 1, total)
-                self.msleep(1)   # throttle
+                self.msleep(1)
             if not self._stop:
                 self.done.emit()
         except Exception as e:
@@ -75,12 +76,12 @@ class UsbPage(QWidget):
         self._wait_timer = QTimer()
         self._wait_timer.setSingleShot(False)
         self._wait_timer.timeout.connect(self._check_queue)
+        self._wait_timeout = QTimer()
+        self._wait_timeout.setSingleShot(True)
+        self._wait_timeout.timeout.connect(self._on_wait_timeout)
         self._build()
 
     def _build(self):
-        # (Keep the exact same UI building code as before)
-        # ... unchanged ...
-        # Ensure we store _btn_refresh etc.
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -220,6 +221,7 @@ class UsbPage(QWidget):
 
         self._repeats_total = self._repeat_spinbox.value()
         self._repeats_remaining = self._repeats_total
+        print(f"[DEBUG] _run_file: total repeats = {self._repeats_total}", file=sys.stderr)
 
         # Disable UI during sending
         self._repeat_spinbox.setEnabled(False)
@@ -232,7 +234,6 @@ class UsbPage(QWidget):
 
     def _start_send(self):
         """Create and start a new thread to send the selected file."""
-        # Clean up previous thread
         if self._send_thread:
             self._send_thread.stop()
             self._send_thread.wait(1000)
@@ -246,6 +247,7 @@ class UsbPage(QWidget):
         self._send_thread.error.connect(self._on_error)
         self._send_thread.finished.connect(self._on_thread_finished)
         self._send_thread.start()
+        print("[DEBUG] _start_send: thread started", file=sys.stderr)
 
     @pyqtSlot(int, int)
     def _on_progress(self, sent, total):
@@ -261,13 +263,15 @@ class UsbPage(QWidget):
 
     @pyqtSlot()
     def _on_file_done(self):
-        """One file reading finished. Decrement repeats and start waiting for queue."""
+        """One file reading finished. Decrement repeats and start waiting."""
         self._repeats_remaining -= 1
+        print(f"[DEBUG] _on_file_done: repeats remaining = {self._repeats_remaining}", file=sys.stderr)
         if self._repeats_remaining > 0:
-            # Wait for GRBL to process all commands before starting next repeat
+            # Start checking the GRBL queue
             self._wait_timer.start(100)
+            self._wait_timeout.start(30000)   # 30 second max wait
+            print("[DEBUG] Started queue monitoring", file=sys.stderr)
         else:
-            # All repeats done, finalize immediately (no need to wait for queue)
             self._finalize_send(completed=True)
 
     @pyqtSlot()
@@ -279,15 +283,26 @@ class UsbPage(QWidget):
 
     def _check_queue(self):
         """Check if GRBL command queue is empty. If yes, start next repeat."""
-        if self._grbl.is_queue_empty():
+        empty = self._grbl.is_queue_empty()
+        print(f"[DEBUG] _check_queue: empty = {empty}", file=sys.stderr)
+        if empty:
             self._wait_timer.stop()
-            # Clean up old thread (should already be gone, but ensure)
+            self._wait_timeout.stop()
+            print("[DEBUG] Queue empty, starting next repeat", file=sys.stderr)
+            # Clean up old thread
             if self._send_thread:
                 self._send_thread.deleteLater()
                 self._send_thread = None
-            # Start the next repeat
             self._start_send()
-        # else continue waiting
+
+    def _on_wait_timeout(self):
+        """Fallback: if queue never empties, force next repeat after timeout."""
+        self._wait_timer.stop()
+        print("[DEBUG] Queue wait timeout, forcing next repeat", file=sys.stderr)
+        if self._send_thread:
+            self._send_thread.deleteLater()
+            self._send_thread = None
+        self._start_send()
 
     @pyqtSlot(str)
     def _on_error(self, msg):
@@ -296,6 +311,7 @@ class UsbPage(QWidget):
     def _finalize_send(self, completed=True, error_msg=None):
         """Re-enable UI and show final status."""
         self._wait_timer.stop()
+        self._wait_timeout.stop()
         if self._send_thread:
             self._send_thread.stop()
             self._send_thread.wait(1000)
@@ -325,6 +341,7 @@ class UsbPage(QWidget):
         """Stop sending and cancel any pending repeats."""
         self._repeats_remaining = 0
         self._wait_timer.stop()
+        self._wait_timeout.stop()
         if self._send_thread:
             self._send_thread.stop()
         self._grbl.reset()
