@@ -1,16 +1,15 @@
 # pages/usb_page.py
 # Browse USB drive for G-code files and send them to GRBL.
 #
-# Bug fix: QSerialPort.write() must be called from the Qt main thread.
-# The old _SendThread called grbl.send() from a background thread, causing
-# silent drops.  Fix: the thread only reads the file (disk I/O); it emits
-# each line as a signal which is received in the main thread and queued via
-# grbl.send().  The flow-control queue in GrblConnection handles pacing.
+# Enhanced: user can specify number of repeats for the selected file.
+# The file is sent sequentially the requested number of times.
+# All serial writes are done in the main thread for safety.
 
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QListWidget, QListWidgetItem, QFrame
+    QLabel, QPushButton, QListWidget, QListWidgetItem, QFrame,
+    QSpinBox  # <-- added for repeat count
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 
@@ -79,6 +78,9 @@ class UsbPage(QWidget):
         self._current_dir   = None
         self._send_thread   = None
         self._selected_path = None
+        self._repeats_total = 1      # total repeats requested
+        self._repeats_remaining = 0  # how many still to send
+        self._repeat_spinbox = None  # will be set in _build
         self._build()
 
     def _build(self):
@@ -112,6 +114,18 @@ class UsbPage(QWidget):
         self._list.itemClicked.connect(self._on_click)
         self._list.itemDoubleClicked.connect(self._on_double)
         root.addWidget(self._list, 1)
+
+        # Repeat count spinbox row
+        repeat_row = QHBoxLayout()
+        repeat_row.addWidget(QLabel('Repeat:'))
+        self._repeat_spinbox = QSpinBox()
+        self._repeat_spinbox.setMinimum(1)
+        self._repeat_spinbox.setMaximum(999)
+        self._repeat_spinbox.setValue(1)
+        self._repeat_spinbox.setToolTip('Number of times to run the selected file')
+        repeat_row.addWidget(self._repeat_spinbox)
+        repeat_row.addStretch()
+        root.addLayout(repeat_row)
 
         # Selected file + buttons
         sel_row = QHBoxLayout()
@@ -198,48 +212,119 @@ class UsbPage(QWidget):
             self._selected_path = d[1]
             self._run_file()
 
-    # ── File sending ──────────────────────────────────────────────────────────
+    # ── File sending with repeats ─────────────────────────────────────────────
 
     def _run_file(self):
-        if not self._selected_path: return
-        if self._send_thread and self._send_thread.isRunning(): return
+        """Start sending the selected file (possibly multiple times)."""
+        if not self._selected_path:
+            return
+        if self._send_thread and self._send_thread.isRunning():
+            return
+
+        # Read repeat count from spinbox and store totals
+        self._repeats_total = self._repeat_spinbox.value()
+        self._repeats_remaining = self._repeats_total
+
+        # Disable UI elements that should not be used during sending
+        self._repeat_spinbox.setEnabled(False)
+        self._list.setEnabled(False)
+        btn_ref = self.sender()  # not reliable, better find by objectName?
+        # We'll just disable the refresh button by finding it in parent layout
+        # For simplicity, we'll assume the refresh button is the one in the header
+        # We'll store a reference to it when building.
+        if hasattr(self, '_btn_refresh'):
+            self._btn_refresh.setEnabled(False)
+        else:
+            # Fallback: find the refresh button in header layout
+            for i in range(self.layout().count()):
+                item = self.layout().itemAt(i)
+                if isinstance(item, QHBoxLayout) and item.count() >= 3:
+                    w = item.itemAt(2).widget()
+                    if w and isinstance(w, QPushButton) and w.text() == '⟳':
+                        self._btn_refresh = w
+                        self._btn_refresh.setEnabled(False)
+                        break
 
         self._btn_run.setEnabled(False)
         self._btn_stop.setEnabled(True)
-        self._prog_lbl.setText('Sending…')
+        self._start_send()
+
+    def _start_send(self):
+        """Create a new thread to send the selected file."""
+        if self._send_thread and self._send_thread.isRunning():
+            return
 
         self._send_thread = _FileLoaderThread(self._selected_path)
-
-        # send_line signal → main-thread slot → grbl.send()
-        # This is the key fix: serial write happens in main thread.
         self._send_thread.send_line.connect(self._grbl.send)
         self._send_thread.progress.connect(self._on_progress)
-        self._send_thread.done.connect(self._on_done)
+        self._send_thread.done.connect(self._on_file_done)
         self._send_thread.error.connect(self._on_error)
         self._send_thread.start()
 
+    @pyqtSlot(int, int)
+    def _on_progress(self, sent, total):
+        """Update progress for the current file send."""
+        pct = int(sent / total * 100) if total else 0
+        if self._repeats_total > 1:
+            self._prog_lbl.setText(
+                f'Repeat {self._repeats_total - self._repeats_remaining + 1} of {self._repeats_total}: '
+                f'{sent} / {total} lines ({pct}%)'
+            )
+        else:
+            self._prog_lbl.setText(f'{sent} / {total} lines  ({pct}%)')
+
+    @pyqtSlot()
+    def _on_file_done(self):
+        """One file send finished. Handle repeats or final completion."""
+        self._send_thread = None  # thread is finished, allow new one
+
+        if self._repeats_remaining > 1:
+            # More repeats remain
+            self._repeats_remaining -= 1
+            self._start_send()   # start next repeat
+        else:
+            # All repeats finished
+            self._repeats_remaining = 0
+            self._finalize_send(completed=True)
+
+    @pyqtSlot(str)
+    def _on_error(self, msg):
+        """Error during file send. Stop everything."""
+        self._finalize_send(completed=False, error_msg=msg)
+
+    def _finalize_send(self, completed=True, error_msg=None):
+        """Clean up after sending is fully done (either completed or stopped)."""
+        # Ensure any running thread is stopped (though it should already be)
+        if self._send_thread:
+            self._send_thread.stop()
+            self._send_thread.wait(1000)
+            self._send_thread = None
+
+        self._btn_run.setEnabled(True)
+        self._btn_stop.setEnabled(False)
+
+        # Re-enable UI elements
+        self._repeat_spinbox.setEnabled(True)
+        self._list.setEnabled(True)
+        if hasattr(self, '_btn_refresh') and self._btn_refresh:
+            self._btn_refresh.setEnabled(True)
+
+        if error_msg:
+            self._prog_lbl.setText(f'Error: {error_msg}')
+        elif completed:
+            if self._repeats_total > 1:
+                self._prog_lbl.setText(f'All {self._repeats_total} repeats completed ✓')
+            else:
+                self._prog_lbl.setText('File queued ✓  — machine is cutting')
+        else:
+            self._prog_lbl.setText('Stopped.')
+
+        self._repeats_remaining = 0
+
     def _stop_file(self):
+        """Stop sending immediately (stop current file, discard remaining repeats)."""
         if self._send_thread:
             self._send_thread.stop()
         self._grbl.reset()
         self._grbl.send('M5')
-        self._btn_run.setEnabled(True)
-        self._btn_stop.setEnabled(False)
-        self._prog_lbl.setText('Stopped.')
-
-    @pyqtSlot(int, int)
-    def _on_progress(self, sent, total):
-        pct = int(sent / total * 100) if total else 0
-        self._prog_lbl.setText('%d / %d lines  (%d%%)' % (sent, total, pct))
-
-    @pyqtSlot()
-    def _on_done(self):
-        self._btn_run.setEnabled(True)
-        self._btn_stop.setEnabled(False)
-        self._prog_lbl.setText('File queued ✓  — machine is cutting')
-
-    @pyqtSlot(str)
-    def _on_error(self, msg):
-        self._btn_run.setEnabled(True)
-        self._btn_stop.setEnabled(False)
-        self._prog_lbl.setText('Error: ' + msg)
+        self._finalize_send(completed=False)
