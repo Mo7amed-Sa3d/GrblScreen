@@ -285,10 +285,12 @@ class DashboardPage(QWidget):
 
     def _toggle_pause(self):
         if self._paused:
+            self._grbl.send("M3 S1000")
             self._grbl.cycle_start()
             self._b_pause.setText('⏸\nPause')
             self._paused = False
         else:
+            self._grbl.send("M5")
             self._grbl.feed_hold()
             self._b_pause.setText('▶\nResume')
             self._paused = True

@@ -276,14 +276,16 @@ class UsbPage(QWidget):
     @pyqtSlot()
     def _on_file_done(self):
         """One file send finished. Handle repeats or final completion."""
-        self._send_thread = None  # thread is finished, allow new one
+        # Wait for the thread to finish completely
+        if self._send_thread and self._send_thread.isRunning():
+            self._send_thread.wait(500)  # wait up to 500ms for thread to end
+        self._send_thread = None
 
         if self._repeats_remaining > 1:
-            # More repeats remain
             self._repeats_remaining -= 1
-            self._start_send()   # start next repeat
+            # Start next repeat after a short delay to avoid race conditions
+            QTimer.singleShot(100, self._start_send)
         else:
-            # All repeats finished
             self._repeats_remaining = 0
             self._finalize_send(completed=True)
 
