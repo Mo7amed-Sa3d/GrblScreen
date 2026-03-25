@@ -1,7 +1,7 @@
 # pages/usb_page.py
 # Browse USB drive for G-code files and send them to GRBL.
 # Enhanced: user can specify number of repeats for the selected file.
-# All serial writes are done in the main thread for safety.
+# Repeats are triggered by detecting the GRBL idle state after a file finishes.
 
 import os
 import sys
@@ -73,12 +73,10 @@ class UsbPage(QWidget):
         self._selected_path = None
         self._repeats_total = 1
         self._repeats_remaining = 0
-        self._wait_timer = QTimer()
-        self._wait_timer.setSingleShot(False)
-        self._wait_timer.timeout.connect(self._check_queue)
-        self._wait_timeout = QTimer()
-        self._wait_timeout.setSingleShot(True)
-        self._wait_timeout.timeout.connect(self._on_wait_timeout)
+        self._waiting_for_idle = False
+        self._idle_timeout = QTimer()
+        self._idle_timeout.setSingleShot(True)
+        self._idle_timeout.timeout.connect(self._on_idle_timeout)
         self._build()
 
     def _build(self):
@@ -263,14 +261,15 @@ class UsbPage(QWidget):
 
     @pyqtSlot()
     def _on_file_done(self):
-        """One file reading finished. Decrement repeats and start waiting."""
+        """One file reading finished. Decrement repeats and start waiting for idle."""
         self._repeats_remaining -= 1
         print(f"[DEBUG] _on_file_done: repeats remaining = {self._repeats_remaining}", file=sys.stderr)
         if self._repeats_remaining > 0:
-            # Start checking the GRBL queue
-            self._wait_timer.start(100)
-            self._wait_timeout.start(30000)   # 30 second max wait
-            print("[DEBUG] Started queue monitoring", file=sys.stderr)
+            # Start monitoring for machine idle
+            self._waiting_for_idle = True
+            self._grbl.state_changed.connect(self._on_state_changed)
+            self._idle_timeout.start(30000)   # 30 sec max wait
+            print("[DEBUG] Started waiting for idle state", file=sys.stderr)
         else:
             self._finalize_send(completed=True)
 
@@ -281,28 +280,35 @@ class UsbPage(QWidget):
             self._send_thread.deleteLater()
             self._send_thread = None
 
-    def _check_queue(self):
-        """Check if GRBL command queue is empty. If yes, start next repeat."""
-        empty = self._grbl.is_queue_empty()
-        print(f"[DEBUG] _check_queue: empty = {empty}", file=sys.stderr)
-        if empty:
-            self._wait_timer.stop()
-            self._wait_timeout.stop()
-            print("[DEBUG] Queue empty, starting next repeat", file=sys.stderr)
+    def _on_state_changed(self, state):
+        """Called when GRBL state changes. Check if we are waiting for idle."""
+        if not self._waiting_for_idle:
+            return
+        print(f"[DEBUG] _on_state_changed: {state}", file=sys.stderr)
+        if state == 'Idle':
+            self._waiting_for_idle = False
+            self._grbl.state_changed.disconnect(self._on_state_changed)
+            self._idle_timeout.stop()
+            print("[DEBUG] Idle detected, starting next repeat", file=sys.stderr)
             # Clean up old thread
             if self._send_thread:
                 self._send_thread.deleteLater()
                 self._send_thread = None
             self._start_send()
 
-    def _on_wait_timeout(self):
-        """Fallback: if queue never empties, force next repeat after timeout."""
-        self._wait_timer.stop()
-        print("[DEBUG] Queue wait timeout, forcing next repeat", file=sys.stderr)
-        if self._send_thread:
-            self._send_thread.deleteLater()
-            self._send_thread = None
-        self._start_send()
+    def _on_idle_timeout(self):
+        """Fallback: if idle never detected, force next repeat."""
+        if self._waiting_for_idle:
+            self._waiting_for_idle = False
+            try:
+                self._grbl.state_changed.disconnect(self._on_state_changed)
+            except:
+                pass
+            print("[DEBUG] Idle wait timeout, forcing next repeat", file=sys.stderr)
+            if self._send_thread:
+                self._send_thread.deleteLater()
+                self._send_thread = None
+            self._start_send()
 
     @pyqtSlot(str)
     def _on_error(self, msg):
@@ -310,8 +316,12 @@ class UsbPage(QWidget):
 
     def _finalize_send(self, completed=True, error_msg=None):
         """Re-enable UI and show final status."""
-        self._wait_timer.stop()
-        self._wait_timeout.stop()
+        self._waiting_for_idle = False
+        try:
+            self._grbl.state_changed.disconnect(self._on_state_changed)
+        except:
+            pass
+        self._idle_timeout.stop()
         if self._send_thread:
             self._send_thread.stop()
             self._send_thread.wait(1000)
@@ -340,8 +350,12 @@ class UsbPage(QWidget):
     def _stop_file(self):
         """Stop sending and cancel any pending repeats."""
         self._repeats_remaining = 0
-        self._wait_timer.stop()
-        self._wait_timeout.stop()
+        self._waiting_for_idle = False
+        try:
+            self._grbl.state_changed.disconnect(self._on_state_changed)
+        except:
+            pass
+        self._idle_timeout.stop()
         if self._send_thread:
             self._send_thread.stop()
         self._grbl.reset()
