@@ -1,8 +1,6 @@
 # pages/usb_page.py
 # Browse USB drive for G-code files and send them to GRBL.
-#
 # Enhanced: user can specify number of repeats for the selected file.
-# The file is sent sequentially the requested number of times.
 # All serial writes are done in the main thread for safety.
 
 import os
@@ -33,12 +31,8 @@ def _find_usb_roots():
 
 
 class _FileLoaderThread(QThread):
-    """
-    Reads a G-code file from disk and emits each line as a signal.
-    The connected slot (in the main thread) calls grbl.send() — safe.
-    """
     send_line = pyqtSignal(str)     # emitted for each G-code line
-    progress  = pyqtSignal(int, int) # (line number, total lines)
+    progress  = pyqtSignal(int, int)
     done      = pyqtSignal()        # emitted when file is completely sent
     error     = pyqtSignal(str)
 
@@ -78,6 +72,7 @@ class UsbPage(QWidget):
         self._selected_path = None
         self._repeats_total = 1
         self._repeats_remaining = 0
+        self._repeat_pending = False    # flag to start next repeat after thread finishes
         self._build()
 
     def _build(self):
@@ -101,7 +96,7 @@ class UsbPage(QWidget):
         btn_ref = QPushButton('⟳')
         btn_ref.setMaximumWidth(52); btn_ref.setMinimumHeight(48)
         btn_ref.clicked.connect(self._refresh)
-        self._btn_refresh = btn_ref   # store reference for later enabling/disabling
+        self._btn_refresh = btn_ref
         hdr.addWidget(btn_ref)
         root.addLayout(hdr)
 
@@ -113,7 +108,7 @@ class UsbPage(QWidget):
         self._list.itemDoubleClicked.connect(self._on_double)
         root.addWidget(self._list, 1)
 
-        # Repeat count spinbox row
+        # Repeat count spinbox
         repeat_row = QHBoxLayout()
         repeat_row.addWidget(QLabel('Repeat:'))
         self._repeat_spinbox = QSpinBox()
@@ -213,17 +208,16 @@ class UsbPage(QWidget):
     # ── File sending with repeats ─────────────────────────────────────────────
 
     def _run_file(self):
-        """Start sending the selected file (possibly multiple times)."""
         if not self._selected_path:
             return
         if self._send_thread and self._send_thread.isRunning():
             return
 
-        # Read repeat count and store totals
         self._repeats_total = self._repeat_spinbox.value()
         self._repeats_remaining = self._repeats_total
+        self._repeat_pending = False
 
-        # Disable UI elements during sending
+        # Disable UI during sending
         self._repeat_spinbox.setEnabled(False)
         self._list.setEnabled(False)
         self._btn_refresh.setEnabled(False)
@@ -233,8 +227,7 @@ class UsbPage(QWidget):
         self._start_send()
 
     def _start_send(self):
-        """Create and start a new thread to send the selected file."""
-        # Ensure any previous thread is completely cleaned up
+        """Create and start a new thread for the selected file."""
         if self._send_thread:
             self._send_thread.stop()
             self._send_thread.wait(1000)
@@ -263,48 +256,41 @@ class UsbPage(QWidget):
 
     @pyqtSlot()
     def _on_file_done(self):
-        """One file has been fully sent. Decide whether to repeat."""
+        """One file sent. Decrement remaining repeats and set pending if more."""
         self._repeats_remaining -= 1
         if self._repeats_remaining > 0:
-            # Schedule next repeat after a short delay
-            QTimer.singleShot(500, self._start_next_repeat)
-        else:
-            self._finalize_send(completed=True)
-
-    def _start_next_repeat(self):
-        """Called after a delay to start the next repeat."""
-        # Clean up the previous thread (should already be finished)
-        if self._send_thread:
-            self._send_thread.stop()
-            self._send_thread.wait(1000)
-            self._send_thread.deleteLater()
-            self._send_thread = None
-        # Start the next file
-        self._start_send()
+            self._repeat_pending = True
+        # else: no more repeats, we'll finalize when thread finishes
 
     @pyqtSlot()
     def _on_thread_finished(self):
-        """Clean up the finished thread object if not already done."""
-        # This slot may be called after we have already cleared the thread,
-        # so we only act if the thread still exists.
-        if self._send_thread and self._send_thread == self.sender():
-            self._send_thread.deleteLater()
-            self._send_thread = None
+        """Thread has ended. If a repeat is pending, start the next one."""
+        if self._repeat_pending and self._repeats_remaining > 0:
+            self._repeat_pending = False
+            # Clean up old thread reference (it's already finished)
+            if self._send_thread:
+                self._send_thread.deleteLater()
+                self._send_thread = None
+            self._start_send()
+        else:
+            # No more repeats – finalize
+            self._finalize_send(completed=True)
 
     @pyqtSlot(str)
     def _on_error(self, msg):
         self._finalize_send(completed=False, error_msg=msg)
 
     def _finalize_send(self, completed=True, error_msg=None):
-        """Re-enable UI and show final status."""
-        # Stop any running thread
+        """Re‑enable UI and show final status."""
         if self._send_thread:
             self._send_thread.stop()
             self._send_thread.wait(1000)
             self._send_thread.deleteLater()
             self._send_thread = None
 
-        # Re-enable UI
+        self._repeat_pending = False
+
+        # Re‑enable UI
         self._repeat_spinbox.setEnabled(True)
         self._list.setEnabled(True)
         self._btn_refresh.setEnabled(True)
@@ -324,11 +310,11 @@ class UsbPage(QWidget):
         self._repeats_remaining = 0
 
     def _stop_file(self):
-        """Stop sending immediately (cancel any pending repeats)."""
+        """Stop sending and cancel any pending repeats."""
         self._repeats_remaining = 0
+        self._repeat_pending = False
         if self._send_thread:
             self._send_thread.stop()
         self._grbl.reset()
         self._grbl.send('M5')
-        # Give the thread a moment to stop, then finalize
         QTimer.singleShot(200, lambda: self._finalize_send(completed=False))
