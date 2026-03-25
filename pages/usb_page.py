@@ -265,7 +265,7 @@ class UsbPage(QWidget):
         if self._repeats_remaining > 0:
             self._waiting_for_idle = True
             self._grbl.state_changed.connect(self._on_state_changed)
-            self._idle_timeout.start(30000)   # 30 sec max wait
+            self._idle_timeout.start(3000000)   # 30 sec max wait
             print("[DEBUG] Started waiting for idle state", file=sys.stderr)
         else:
             self._finalize_send(completed=True)
