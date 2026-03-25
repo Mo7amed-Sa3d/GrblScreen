@@ -154,7 +154,9 @@ class GrblConnection(QObject):
     def knife_up_cmd(self):
         self.send('M5')
 
-    # ── Queue flush ───────────────────────────────────────────────────────────
+    def is_queue_empty(self):
+        """Return True if no commands are pending in the queue."""
+        return len(self._cmd_q) == 0 and self._in_flight == 0    # ── Queue flush ───────────────────────────────────────────────────────────
 
     def _flush(self):
         """
