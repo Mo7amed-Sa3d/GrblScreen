@@ -1,10 +1,4 @@
 # grbl_connection.py
-# Async GRBL serial communication using QSerialPort.
-#
-# Knife status:
-#   Tracked CLIENT-SIDE from sent M3/M5 commands — never waits for status report.
-#   knife_changed signal fires instantly on send.
-
 import re
 from collections import deque
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
@@ -19,7 +13,7 @@ STATE_MAP = {
     'Hold':         ('HOLD',    'stateHold'),
     'Hold:0':       ('HOLD',    'stateHold'),
     'Hold:1':       ('HOLD',    'stateHold'),
-    'Home':         ('HOMING',  'stateHome'),
+    'Home':         ('HOMING',  'stateIdle'),
     'Alarm':        ('ALARM',   'stateAlarm'),
     'Door':         ('DOOR',    'stateAlarm'),
     'Check':        ('CHECK',   'stateHold'),
@@ -41,7 +35,7 @@ class GrblConnection(QObject):
     state_changed    = pyqtSignal(str)
     position_changed = pyqtSignal(float, float, float)
     feed_changed     = pyqtSignal(float, float)
-    knife_changed    = pyqtSignal(bool, int)     # (down, force 0-1000)
+    knife_changed    = pyqtSignal(bool, int)
     message_received = pyqtSignal(str)
     alarm_received   = pyqtSignal(str)
     ok_received      = pyqtSignal()
@@ -59,15 +53,12 @@ class GrblConnection(QObject):
         self.state = 'Disconnected'
         self.mpos  = (0.0, 0.0, 0.0)
         self.feed  = (0.0, 0.0)
-
         self._port.readyRead.connect(self._on_data)
         self._port.errorOccurred.connect(self._on_error)
-
         self._poll = QTimer(self)
         self._poll.setInterval(STATUS_INTERVAL)
-        self._poll.timeout.connect(lambda: self._port.isOpen() and self._port.write(b'?'))
-
-    # ── Connection ────────────────────────────────────────────────────────────
+        self._poll.timeout.connect(
+            lambda: self._port.isOpen() and self._port.write(b'?'))
 
     def connect(self, port_name, baud=115200):
         if self._port.isOpen():
@@ -96,14 +87,12 @@ class GrblConnection(QObject):
         return [(i.portName(), i.description())
                 for i in QSerialPortInfo.availablePorts()]
 
-    # ── Sending ───────────────────────────────────────────────────────────────
-
     def send(self, cmd):
-        upper = cmd.strip().upper()
-        if upper.startswith('M5'):
+        u = cmd.strip().upper()
+        if u.startswith('M5'):
             self.knife_down = False; self.knife_force = 0
             self.knife_changed.emit(False, 0)
-        elif upper.startswith('M3'):
+        elif u.startswith('M3'):
             m = M3_RE.search(cmd)
             f = max(0, min(1000, int(float(m.group(1))) if m else 1000))
             self.knife_down = True; self.knife_force = f
@@ -115,9 +104,9 @@ class GrblConnection(QObject):
         if self._port.isOpen():
             self._port.write(bytes([byte]))
 
-    def feed_hold(self):   self.send_rt(0x21)
-    def cycle_start(self): self.send_rt(0x7E)
-    def cancel_jog(self):  self.send_rt(0x85)
+    def feed_hold(self):    self.send_rt(0x21)
+    def cycle_start(self):  self.send_rt(0x7E)
+    def cancel_jog(self):   self.send_rt(0x85)
 
     def reset(self):
         self._cmd_q.clear(); self._in_flight = 0
@@ -137,13 +126,10 @@ class GrblConnection(QObject):
     def _flush(self):
         while self._cmd_q:
             line = self._cmd_q[0]
-            if self._in_flight + len(line) > RX_BUFFER_SIZE:
-                break
+            if self._in_flight + len(line) > RX_BUFFER_SIZE: break
             self._cmd_q.popleft()
             self._in_flight += len(line)
             self._port.write(line.encode())
-
-    # ── Receive ───────────────────────────────────────────────────────────────
 
     def _on_data(self):
         self._rx_buf += self._port.readAll().data().decode('utf-8', errors='replace')
