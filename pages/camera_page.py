@@ -1,9 +1,12 @@
 # pages/camera_page.py
-# Raspberry Pi camera feed using libcamera-vid MJPEG stream
-# Displays live feed in a QLabel using a background reader thread.
+# Pi camera live feed via libcamera-vid MJPEG stream.
+#
+# Bug fix: subprocess can't find 'libcamera-vid' when running under a
+# restricted environment (systemd service / X11 without full PATH).
+# Fix: search for the binary in known locations before invoking.
 
 import subprocess
-import struct
+import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame
@@ -12,17 +15,40 @@ from PyQt5.QtCore  import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui   import QPixmap, QImage
 
 
+# Locations to search for libcamera binaries
+_LIBCAM_PATHS = [
+    '/usr/bin/libcamera-vid',
+    '/usr/local/bin/libcamera-vid',
+    '/opt/vc/bin/libcamera-vid',
+]
+
+
+def _find_libcamera_vid():
+    """Return the full path to libcamera-vid, or None if not found."""
+    for p in _LIBCAM_PATHS:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    # Also try PATH (works when running manually, may fail under systemd)
+    try:
+        result = subprocess.run(
+            ['which', 'libcamera-vid'],
+            capture_output=True, text=True, timeout=3
+        )
+        path = result.stdout.strip()
+        if path and os.path.isfile(path):
+            return path
+    except Exception:
+        pass
+    return None
+
+
 class _MjpegThread(QThread):
-    """
-    Starts libcamera-vid in MJPEG mode and reads frames as raw JPEG bytes.
-    Emits each frame as a QImage.
-    libcamera-vid outputs MJPEG stream to stdout.
-    """
     frame_ready = pyqtSignal(QImage)
     error       = pyqtSignal(str)
 
-    def __init__(self, width=640, height=480, fps=15):
+    def __init__(self, binary, width=460, height=380, fps=15):
         super().__init__()
+        self._bin  = binary
         self._w    = width
         self._h    = height
         self._fps  = fps
@@ -32,43 +58,52 @@ class _MjpegThread(QThread):
     def stop(self):
         self._stop = True
         if self._proc:
-            try: self._proc.terminate()
-            except Exception: pass
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2)
+            except Exception:
+                pass
 
     def run(self):
         cmd = [
-            'libcamera-vid',
-            '--codec', 'mjpeg',
-            '--width',  str(self._w),
-            '--height', str(self._h),
+            self._bin,
+            '--codec',     'mjpeg',
+            '--width',     str(self._w),
+            '--height',    str(self._h),
             '--framerate', str(self._fps),
-            '--timeout', '0',           # run indefinitely
+            '--timeout',   '0',
             '--nopreview',
-            '-o', '-',                  # output to stdout
+            '-o', '-',
         ]
         try:
             self._proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, 'LIBCAMERA_LOG_LEVELS': '*:ERROR'},
             )
-        except FileNotFoundError:
-            self.error.emit('libcamera-vid not found. Install: sudo apt install libcamera-apps')
-            return
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit('Failed to start camera: %s' % str(e))
             return
 
         buf = b''
         while not self._stop:
             chunk = self._proc.stdout.read(4096)
             if not chunk:
+                # Process ended
+                stderr = self._proc.stderr.read().decode('utf-8', errors='replace')
+                if not self._stop:
+                    self.error.emit('Camera stream ended. %s' % stderr[:120])
                 break
             buf += chunk
 
-            # Find JPEG boundaries (SOI = FF D8, EOI = FF D9)
+            # Extract complete JPEG frames (SOI FF D8 … EOI FF D9)
             while True:
                 soi = buf.find(b'\xff\xd8')
-                eoi = buf.find(b'\xff\xd9', soi + 2) if soi >= 0 else -1
-                if soi < 0 or eoi < 0:
+                if soi < 0:
+                    break
+                eoi = buf.find(b'\xff\xd9', soi + 2)
+                if eoi < 0:
                     break
                 jpeg = buf[soi:eoi + 2]
                 buf  = buf[eoi + 2:]
@@ -76,15 +111,13 @@ class _MjpegThread(QThread):
                 if not img.isNull():
                     self.frame_ready.emit(img)
 
-        try: self._proc.wait(timeout=2)
-        except Exception: pass
-
 
 class CameraPage(QWidget):
     def __init__(self, on_back, parent=None):
         super().__init__(parent)
         self._on_back = on_back
         self._thread  = None
+        self._binary  = None   # resolved path to libcamera-vid
         self._build()
 
     def _build(self):
@@ -92,7 +125,7 @@ class CameraPage(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
-        # ── Header ────────────────────────────────────────────────────────────
+        # Header
         hdr = QHBoxLayout()
         btn_back = QPushButton('◀  Back')
         btn_back.setProperty('role', 'back')
@@ -100,9 +133,8 @@ class CameraPage(QWidget):
         btn_back.clicked.connect(self._go_back)
         hdr.addWidget(btn_back)
 
-        lbl_title = QLabel('Camera')
-        lbl_title.setStyleSheet('font-size:16px; font-weight:bold; color:#ff8c00;')
-        hdr.addWidget(lbl_title, 1)
+        hdr.addWidget(QLabel('Camera').setStyleSheet('') or
+                      self._lbl('Camera', 16, '#ff8c00'))
 
         self._btn_start = QPushButton('▶  Start')
         self._btn_start.setProperty('role', 'success')
@@ -116,43 +148,68 @@ class CameraPage(QWidget):
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._stop)
         hdr.addWidget(self._btn_stop)
-
         root.addLayout(hdr)
 
         div = QFrame(); div.setFrameShape(QFrame.HLine); root.addWidget(div)
 
-        # ── Video label ───────────────────────────────────────────────────────
+        # Video display
         self._video = QLabel()
         self._video.setAlignment(Qt.AlignCenter)
-        self._video.setStyleSheet(
-            'background:#111; border:1px solid #444; border-radius:8px;'
-        )
-        self._video.setText('Press ▶ Start to open camera')
         self._video.setMinimumHeight(300)
+        self._video.setStyleSheet(
+            'background:#111; border:1px solid #444; border-radius:8px; color:#555;')
+        self._video.setText('Press ▶ Start to open camera')
         root.addWidget(self._video, 1)
 
-        # ── Status ────────────────────────────────────────────────────────────
+        # Status
         self._status = QLabel('Camera idle')
         self._status.setAlignment(Qt.AlignCenter)
         self._status.setStyleSheet('color:#aaa; font-size:13px;')
         root.addWidget(self._status)
 
+    def _lbl(self, text, size=14, color='#fff'):
+        l = QLabel(text)
+        l.setStyleSheet('font-size:%dpx; font-weight:bold; color:%s;' % (size, color))
+        return l
+
+    def _resolve_binary(self):
+        """Find libcamera-vid and cache its path. Returns path or None."""
+        if self._binary:
+            return self._binary
+        self._binary = _find_libcamera_vid()
+        return self._binary
+
     def _start(self):
         if self._thread and self._thread.isRunning():
             return
+
+        binary = self._resolve_binary()
+        if not binary:
+            self._status.setText(
+                'libcamera-vid not found.\n'
+                'Run:  sudo apt-get install -y libcamera-apps\n'
+                'Then check:  which libcamera-vid'
+            )
+            self._status.setStyleSheet('color:#f44336; font-size:13px;')
+            return
+
         self._video.setText('Starting camera…')
-        self._thread = _MjpegThread(width=460, height=380, fps=15)
+        self._status.setText('Using: ' + binary)
+        self._status.setStyleSheet('color:#aaa; font-size:12px;')
+
+        self._thread = _MjpegThread(binary, width=460, height=380, fps=15)
         self._thread.frame_ready.connect(self._on_frame)
         self._thread.error.connect(self._on_error)
         self._thread.start()
+
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
-        self._status.setText('Camera running')
 
     def _stop(self):
         if self._thread:
             self._thread.stop()
-            self._thread.wait(2000)
+            self._thread.wait(3000)
+            self._thread = None
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
         self._status.setText('Camera stopped')
@@ -167,14 +224,12 @@ class CameraPage(QWidget):
         w = self._video.width()
         h = self._video.height()
         pix = QPixmap.fromImage(img).scaled(
-            w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
+            w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self._video.setPixmap(pix)
 
     @pyqtSlot(str)
     def _on_error(self, msg):
-        self._status.setText('Error: %s' % msg)
-        self._status.setStyleSheet('color:#f44336; font-size:13px;')
+        self._status.setText(msg)
+        self._status.setStyleSheet('color:#f44336; font-size:12px;')
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
-        self._video.setText('Camera error — see status below')
