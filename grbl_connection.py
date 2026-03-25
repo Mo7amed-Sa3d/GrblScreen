@@ -25,6 +25,12 @@ STATE_MAP = {
     'Disconnected': ('NO CONN', 'stateNone'),
 }
 
+STATUS_RE = re.compile(
+    r'<(\w+)(?::\d+)?\|MPos:([-\d.]+),([-\d.]+),([-\d.]+)'
+    r'(?:\|FS:([\d.]+),([\d.]+))?'
+)
+M3_RE = re.compile(r'\bM3\b.*?S\s*([\d.]+)', re.IGNORECASE)
+
 
 class GrblConnection(QObject):
     connected        = pyqtSignal()
@@ -49,8 +55,9 @@ class GrblConnection(QObject):
 
         # Sent queue: byte lengths of commands already written to serial,
         # waiting for their 'ok' response.
+        # Each 'ok' pops the front entry and frees that many bytes.
         self._sent_lens  = deque()
-        self._in_flight  = 0        # total bytes inside GRBL RX buffer
+        self._in_flight  = 0        # total bytes currently inside GRBL RX buffer
 
         self.knife_down  = False
         self.knife_force = 0
@@ -63,6 +70,7 @@ class GrblConnection(QObject):
 
         self._poll = QTimer(self)
         self._poll.setInterval(STATUS_INTERVAL)
+        # '?' is a real-time command — not queued, not counted
         self._poll.timeout.connect(
             lambda: self._port.isOpen() and self._port.write(b'?'))
 
@@ -102,7 +110,7 @@ class GrblConnection(QObject):
 
     def send(self, cmd):
         """
-        Queue a G-code command. Must be called from the Qt main thread.
+        Queue a G-code command.  Must be called from the Qt main thread.
         Intercepts M3/M5 for immediate knife state tracking.
         """
         u = cmd.strip().upper()
@@ -110,8 +118,7 @@ class GrblConnection(QObject):
             self.knife_down = False; self.knife_force = 0
             self.knife_changed.emit(False, 0)
         elif u.startswith('M3'):
-            import re
-            m = re.search(r'\bM3\b.*?S\s*([\d.]+)', cmd, re.IGNORECASE)
+            m = M3_RE.search(cmd)
             f = max(0, min(1000, int(float(m.group(1))) if m else 1000))
             self.knife_down = True; self.knife_force = f
             self.knife_changed.emit(True, f)
@@ -177,55 +184,26 @@ class GrblConnection(QObject):
     def _parse(self, line):
         self.raw_received.emit(line)
 
-        # Status report
+        # Status report — real-time, not queued, no 'ok'
         if line.startswith('<'):
-            # --- Robust parsing of status line ---
-            # Extract the state (first word after '<', stop at ':' or '|' or '>')
-            state_part = ''
-            try:
-                after_lt = line[1:]
-                # Find the first separator
-                for sep in (':', '|', '>'):
-                    idx = after_lt.find(sep)
-                    if idx != -1:
-                        state_part = after_lt[:idx]
-                        break
-                if not state_part:
-                    state_part = after_lt.split()[0]  # fallback
-            except:
-                pass
-
-            # Extract MPos and FS
-            x = y = z = 0.0
-            fr = sp = 0.0
-            m_match = re.search(r'\|MPos:([-\d.]+),([-\d.]+),([-\d.]+)', line)
-            if m_match:
-                x, y, z = map(float, m_match.groups())
-            f_match = re.search(r'\|FS:([\d.]+),([-\d.]+)', line)
-            if f_match:
-                fr, sp = map(float, f_match.groups())
-
-            # Map state to canonical form
-            ns = STATE_MAP.get(state_part, (state_part.upper(), 'stateNone'))[0]
-
-            # Update internal state
-            if ns != self.state:
-                self.state = ns
-                self.state_changed.emit(ns)
-            self.mpos = (x, y, z)
-            self.position_changed.emit(x, y, z)
-            if (fr, sp) != self.feed:
-                self.feed = (fr, sp)
-                self.feed_changed.emit(fr, sp)
-            if f_match and sp > 0:
-                if not self.knife_down:
-                    self.knife_down = True
-                    self.knife_force = int(sp)
-                    self.knife_changed.emit(True, int(sp))
-            elif self.knife_down:
-                self.knife_down = False
-                self.knife_force = 0
-                self.knife_changed.emit(False, 0)
+            m = STATUS_RE.match(line)
+            if m:
+                ns = m.group(1)
+                x, y, z = float(m.group(2)), float(m.group(3)), float(m.group(4))
+                fr = float(m.group(5)) if m.group(5) else self.feed[0]
+                sp = float(m.group(6)) if m.group(6) else self.feed[1]
+                if ns != self.state:
+                    self.state = ns; self.state_changed.emit(ns)
+                self.mpos = (x, y, z)
+                self.position_changed.emit(x, y, z)
+                if (fr, sp) != self.feed:
+                    self.feed = (fr, sp); self.feed_changed.emit(fr, sp)
+                if m.group(6) is not None:
+                    d = sp > 0
+                    if d != self.knife_down:
+                        self.knife_down = d
+                        self.knife_force = int(sp) if d else 0
+                        self.knife_changed.emit(d, self.knife_force)
             return
 
         # 'ok' — one command has been accepted and processed by GRBL.
@@ -249,8 +227,7 @@ class GrblConnection(QObject):
 
         if line.startswith('ALARM:'):
             self.alarm_received.emit(line)
-            self.state = 'Alarm'
-            self.state_changed.emit('Alarm')
+            self.state = 'Alarm'; self.state_changed.emit('Alarm')
             return
 
         if line.startswith('[MSG:'):
@@ -259,7 +236,3 @@ class GrblConnection(QObject):
     def _on_error(self, err):
         if err != QSerialPort.NoError:
             self.disconnect()
-
-    def is_queue_empty(self):
-        """Return True if no commands are waiting in the queue."""
-        return len(self._cmd_q) == 0 and self._in_flight == 0
