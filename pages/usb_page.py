@@ -1,7 +1,6 @@
 # pages/usb_page.py
 # Browse USB drive for G-code files and send them to GRBL.
-# Enhanced: user can specify number of repeats for the selected file.
-# Repeats are triggered by detecting the GRBL idle state after a file finishes.
+# Repeats are triggered by the machine's idle state.
 
 import os
 import sys
@@ -48,15 +47,14 @@ class _FileLoaderThread(QThread):
     def run(self):
         try:
             with open(self._path, 'r', errors='replace') as f:
-                lines = [l.strip() for l in f
-                         if l.strip() and not l.strip().startswith(';')]
+                lines = [l.strip() for l in f if l.strip()]   # keep all lines (comments are kept)
             total = len(lines)
             for i, line in enumerate(lines):
                 if self._stop:
                     break
                 self.send_line.emit(line)
                 self.progress.emit(i + 1, total)
-                self.msleep(1)
+                self.msleep(1)          # throttle to avoid flooding the signal queue
             if not self._stop:
                 self.done.emit()
         except Exception as e:
@@ -112,7 +110,7 @@ class UsbPage(QWidget):
         self._list.itemDoubleClicked.connect(self._on_double)
         root.addWidget(self._list, 1)
 
-        # Repeat count spinbox
+        # Repeat count spinbox row
         repeat_row = QHBoxLayout()
         repeat_row.addWidget(QLabel('Repeat:'))
         self._repeat_spinbox = QSpinBox()
@@ -265,7 +263,6 @@ class UsbPage(QWidget):
         self._repeats_remaining -= 1
         print(f"[DEBUG] _on_file_done: repeats remaining = {self._repeats_remaining}", file=sys.stderr)
         if self._repeats_remaining > 0:
-            # Start monitoring for machine idle
             self._waiting_for_idle = True
             self._grbl.state_changed.connect(self._on_state_changed)
             self._idle_timeout.start(30000)   # 30 sec max wait
@@ -287,7 +284,10 @@ class UsbPage(QWidget):
         print(f"[DEBUG] _on_state_changed: {state}", file=sys.stderr)
         if state == 'Idle':
             self._waiting_for_idle = False
-            self._grbl.state_changed.disconnect(self._on_state_changed)
+            try:
+                self._grbl.state_changed.disconnect(self._on_state_changed)
+            except:
+                pass
             self._idle_timeout.stop()
             print("[DEBUG] Idle detected, starting next repeat", file=sys.stderr)
             # Clean up old thread
