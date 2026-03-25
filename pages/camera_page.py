@@ -1,10 +1,13 @@
 # pages/camera_page.py
-# Pi camera live feed via libcamera-vid MJPEG stream.
+# Pi camera live feed via rpicam-vid (or libcamera-vid) MJPEG stream.
 #
-# Bug fix: subprocess can't find 'libcamera-vid' when running under a
+# Bug fix: subprocess can't find 'rpicam-vid' when running under a
 # restricted environment (systemd service / X11 without full PATH).
 # Fix: search for the binary in known locations before invoking.
-#Still not working
+#
+# Updated to use rpicam-vid (the newer name for libcamera-vid on Bookworm).
+# Falls back to libcamera-vid if rpicam-vid is not found.
+
 import subprocess
 import os
 from PyQt5.QtWidgets import (
@@ -15,30 +18,34 @@ from PyQt5.QtCore  import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui   import QPixmap, QImage
 
 
-# Locations to search for libcamera binaries
-_LIBCAM_PATHS = [
+# Locations to search for camera binaries (rpicam-vid first, then libcamera-vid)
+_CAMERA_PATHS = [
+    '/usr/bin/rpicam-vid',
+    '/usr/local/bin/rpicam-vid',
+    '/opt/vc/bin/rpicam-vid',
     '/usr/bin/libcamera-vid',
     '/usr/local/bin/libcamera-vid',
     '/opt/vc/bin/libcamera-vid',
 ]
 
 
-def _find_libcamera_vid():
-    """Return the full path to libcamera-vid, or None if not found."""
-    for p in _LIBCAM_PATHS:
+def _find_camera_binary():
+    """Return the full path to rpicam-vid or libcamera-vid, or None if not found."""
+    for p in _CAMERA_PATHS:
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
     # Also try PATH (works when running manually, may fail under systemd)
-    try:
-        result = subprocess.run(
-            ['which', 'libcamera-vid'],
-            capture_output=True, text=True, timeout=3
-        )
-        path = result.stdout.strip()
-        if path and os.path.isfile(path):
-            return path
-    except Exception:
-        pass
+    for name in ('rpicam-vid', 'libcamera-vid'):
+        try:
+            result = subprocess.run(
+                ['which', name],
+                capture_output=True, text=True, timeout=3
+            )
+            path = result.stdout.strip()
+            if path and os.path.isfile(path):
+                return path
+        except Exception:
+            pass
     return None
 
 
@@ -117,7 +124,7 @@ class CameraPage(QWidget):
         super().__init__(parent)
         self._on_back = on_back
         self._thread  = None
-        self._binary  = None   # resolved path to libcamera-vid
+        self._binary  = None   # resolved path to camera binary
         self._build()
 
     def _build(self):
@@ -173,10 +180,10 @@ class CameraPage(QWidget):
         return l
 
     def _resolve_binary(self):
-        """Find libcamera-vid and cache its path. Returns path or None."""
+        """Find rpicam-vid or libcamera-vid and cache its path. Returns path or None."""
         if self._binary:
             return self._binary
-        self._binary = _find_libcamera_vid()
+        self._binary = _find_camera_binary()
         return self._binary
 
     def _start(self):
@@ -186,9 +193,9 @@ class CameraPage(QWidget):
         binary = self._resolve_binary()
         if not binary:
             self._status.setText(
-                'libcamera-vid not found.\n'
-                'Run:  sudo apt-get install -y libcamera-apps\n'
-                'Then check:  which libcamera-vid'
+                'Camera binary not found.\n'
+                'Run:  sudo apt install -y rpicam-apps   (or libcamera-apps)\n'
+                'Then check:  which rpicam-vid  or  which libcamera-vid'
             )
             self._status.setStyleSheet('color:#f44336; font-size:13px;')
             return
