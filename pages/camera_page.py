@@ -4,7 +4,7 @@
 # Bug fix: subprocess can't find 'libcamera-vid' when running under a
 # restricted environment (systemd service / X11 without full PATH).
 # Fix: search for the binary in known locations before invoking.
-
+#Still not working
 import subprocess
 import os
 from PyQt5.QtWidgets import (
