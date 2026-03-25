@@ -9,9 +9,9 @@ import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QListWidget, QListWidgetItem, QFrame,
-    QSpinBox  # <-- added for repeat count
+    QSpinBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QTimer
 
 GCODE_EXTS = {'.nc', '.gcode', '.gc', '.ngc', '.cnc', '.tap'}
 USB_MOUNTS = ['/media', '/mnt', '/run/media']
@@ -39,7 +39,6 @@ class _FileLoaderThread(QThread):
     """
     send_line = pyqtSignal(str)     # emitted for each G-code line
     progress  = pyqtSignal(int, int)
-    done      = pyqtSignal()
     error     = pyqtSignal(str)
 
     def __init__(self, filepath):
@@ -59,13 +58,9 @@ class _FileLoaderThread(QThread):
             for i, line in enumerate(lines):
                 if self._stop:
                     break
-                self.send_line.emit(line)   # → main thread → grbl.send()
+                self.send_line.emit(line)
                 self.progress.emit(i + 1, total)
-                # Small sleep to avoid flooding the signal queue faster
-                # than Qt can dispatch.  The flow control queue in
-                # GrblConnection handles the actual serial pacing.
-                self.msleep(1)
-            self.done.emit()
+                self.msleep(1)  # throttle to avoid overwhelming Qt
         except Exception as e:
             self.error.emit(str(e))
 
@@ -78,9 +73,9 @@ class UsbPage(QWidget):
         self._current_dir   = None
         self._send_thread   = None
         self._selected_path = None
-        self._repeats_total = 1      # total repeats requested
-        self._repeats_remaining = 0  # how many still to send
-        self._repeat_spinbox = None  # will be set in _build
+        self._repeats_total = 1
+        self._repeats_remaining = 0
+        self._repeat_spinbox = None
         self._build()
 
     def _build(self):
@@ -104,6 +99,7 @@ class UsbPage(QWidget):
         btn_ref = QPushButton('⟳')
         btn_ref.setMaximumWidth(52); btn_ref.setMinimumHeight(48)
         btn_ref.clicked.connect(self._refresh)
+        self._btn_refresh = btn_ref  # store reference
         hdr.addWidget(btn_ref)
         root.addLayout(hdr)
 
@@ -224,69 +220,77 @@ class UsbPage(QWidget):
         self._repeats_total = self._repeat_spinbox.value()
         self._repeats_remaining = self._repeats_total
 
-        # Disable UI during sending
+        # Disable UI
         self._repeat_spinbox.setEnabled(False)
         self._list.setEnabled(False)
-        if hasattr(self, '_btn_refresh'):
-            self._btn_refresh.setEnabled(False)
-
+        self._btn_refresh.setEnabled(False)
         self._btn_run.setEnabled(False)
         self._btn_stop.setEnabled(True)
+
         self._start_send()
 
     def _start_send(self):
-        """Create a new thread to send the selected file."""
-        if self._send_thread and self._send_thread.isRunning():
-            return
-
-        self._send_thread = _FileLoaderThread(self._selected_path)
-        self._send_thread.send_line.connect(self._grbl.send)
-        self._send_thread.progress.connect(self._on_progress)
-        self._send_thread.done.connect(self._on_file_done)
-        self._send_thread.error.connect(self._on_error)
-        self._send_thread.start()
-
-    @pyqtSlot()
-    def _on_file_done(self):
-        """One file send finished. Handle repeats or final completion."""
-        # Clean up the finished thread
-        if self._send_thread:
-            # Ensure it's stopped (though it already finished)
-            self._send_thread.stop()
-            self._send_thread.wait(1000)          # wait for thread to exit
-            self._send_thread.deleteLater()       # schedule deletion
-            self._send_thread = None
-
-        if self._repeats_remaining > 1:
-            # More repeats remain – start next after a short delay
-            self._repeats_remaining -= 1
-            QTimer.singleShot(200, self._start_send)
-        else:
-            # All repeats finished
-            self._repeats_remaining = 0
-            self._finalize_send(completed=True)
-
-    @pyqtSlot(str)
-    def _on_error(self, msg):
-        """Error during file send. Stop everything."""
-        self._finalize_send(completed=False, error_msg=msg)
-
-    def _finalize_send(self, completed=True, error_msg=None):
-        """Clean up after sending is fully done (either completed or stopped)."""
+        """Create and start a new thread to send the selected file."""
+        # Ensure any previous thread is completely gone
         if self._send_thread:
             self._send_thread.stop()
             self._send_thread.wait(1000)
             self._send_thread.deleteLater()
             self._send_thread = None
 
-        self._btn_run.setEnabled(True)
-        self._btn_stop.setEnabled(False)
+        self._send_thread = _FileLoaderThread(self._selected_path)
+        self._send_thread.send_line.connect(self._grbl.send)
+        self._send_thread.progress.connect(self._on_progress)
+        self._send_thread.error.connect(self._on_error)
+        self._send_thread.finished.connect(self._on_thread_finished)  # use finished signal
+        self._send_thread.start()
 
-        # Re-enable UI elements
+    @pyqtSlot(int, int)
+    def _on_progress(self, sent, total):
+        pct = int(sent / total * 100) if total else 0
+        if self._repeats_total > 1:
+            done = self._repeats_total - self._repeats_remaining
+            self._prog_lbl.setText(
+                f'Repeat {done+1} of {self._repeats_total}: '
+                f'{sent} / {total} lines ({pct}%)'
+            )
+        else:
+            self._prog_lbl.setText(f'{sent} / {total} lines  ({pct}%)')
+
+    @pyqtSlot()
+    def _on_thread_finished(self):
+        """Called when the thread finishes (after run exits)."""
+        # The thread has ended, we can clean up
+        if self._send_thread:
+            self._send_thread.deleteLater()
+            self._send_thread = None
+
+        if self._repeats_remaining > 1:
+            # More repeats remain
+            self._repeats_remaining -= 1
+            QTimer.singleShot(200, self._start_send)   # delay before next
+        else:
+            self._finalize_send(completed=True)
+
+    @pyqtSlot(str)
+    def _on_error(self, msg):
+        self._finalize_send(completed=False, error_msg=msg)
+
+    def _finalize_send(self, completed=True, error_msg=None):
+        """Clean up and re-enable UI."""
+        # Stop any running thread
+        if self._send_thread:
+            self._send_thread.stop()
+            self._send_thread.wait(1000)
+            self._send_thread.deleteLater()
+            self._send_thread = None
+
+        # Re-enable UI
         self._repeat_spinbox.setEnabled(True)
         self._list.setEnabled(True)
-        if hasattr(self, '_btn_refresh') and self._btn_refresh:
-            self._btn_refresh.setEnabled(True)
+        self._btn_refresh.setEnabled(True)
+        self._btn_run.setEnabled(True)
+        self._btn_stop.setEnabled(False)
 
         if error_msg:
             self._prog_lbl.setText(f'Error: {error_msg}')
@@ -301,17 +305,11 @@ class UsbPage(QWidget):
         self._repeats_remaining = 0
 
     def _stop_file(self):
-        """Stop sending immediately (stop current file, discard remaining repeats)."""
-        # Cancel any pending repeats
-        self._repeats_remaining = 0
-
+        """Stop sending immediately."""
+        self._repeats_remaining = 0   # discard any pending repeats
         if self._send_thread:
             self._send_thread.stop()
-            # Wait for thread to finish, but don't block UI
-            QTimer.singleShot(100, self._finalize_send)   # delay final cleanup
-        else:
-            self._finalize_send(completed=False)
-
-        # Reset GRBL
         self._grbl.reset()
         self._grbl.send('M5')
+        # Wait a bit then finalize to allow stop to take effect
+        QTimer.singleShot(200, lambda: self._finalize_send(completed=False))
