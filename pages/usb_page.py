@@ -1,6 +1,9 @@
 # pages/usb_page.py
 # Browse USB drive for G-code files and send them to GRBL.
+#
 # Enhanced: user can specify number of repeats for the selected file.
+# The file is sent sequentially the requested number of times.
+# All serial writes are done in the main thread for safety.
 
 import os
 from PyQt5.QtWidgets import (
@@ -34,7 +37,7 @@ class _FileLoaderThread(QThread):
     Reads a G-code file from disk and emits each line as a signal.
     The connected slot (in the main thread) calls grbl.send() — safe.
     """
-    send_line = pyqtSignal(str)     # each line of G-code
+    send_line = pyqtSignal(str)     # emitted for each G-code line
     progress  = pyqtSignal(int, int) # (line number, total lines)
     done      = pyqtSignal()        # emitted when file is completely sent
     error     = pyqtSignal(str)
@@ -56,7 +59,7 @@ class _FileLoaderThread(QThread):
             for i, line in enumerate(lines):
                 if self._stop:
                     break
-                self.send_line.emit(line)   # → main thread → grbl.send()
+                self.send_line.emit(line)
                 self.progress.emit(i + 1, total)
                 self.msleep(1)   # avoid flooding the signal queue
             if not self._stop:
@@ -230,8 +233,8 @@ class UsbPage(QWidget):
         self._start_send()
 
     def _start_send(self):
-        """Create and start a thread to send the selected file."""
-        # Ensure any previous thread is cleaned up
+        """Create and start a new thread to send the selected file."""
+        # Ensure any previous thread is completely cleaned up
         if self._send_thread:
             self._send_thread.stop()
             self._send_thread.wait(1000)
@@ -241,9 +244,9 @@ class UsbPage(QWidget):
         self._send_thread = _FileLoaderThread(self._selected_path)
         self._send_thread.send_line.connect(self._grbl.send)
         self._send_thread.progress.connect(self._on_progress)
-        self._send_thread.done.connect(self._on_file_done)      # file finished
+        self._send_thread.done.connect(self._on_file_done)
         self._send_thread.error.connect(self._on_error)
-        self._send_thread.finished.connect(self._on_thread_finished)  # thread cleanup
+        self._send_thread.finished.connect(self._on_thread_finished)
         self._send_thread.start()
 
     @pyqtSlot(int, int)
@@ -261,20 +264,30 @@ class UsbPage(QWidget):
     @pyqtSlot()
     def _on_file_done(self):
         """One file has been fully sent. Decide whether to repeat."""
-        # Decrement remaining repeats after this file
         self._repeats_remaining -= 1
-
         if self._repeats_remaining > 0:
-            # More repeats left – start next after a short delay
-            QTimer.singleShot(200, self._start_send)
+            # Schedule next repeat after a short delay
+            QTimer.singleShot(500, self._start_next_repeat)
         else:
-            # All repeats done
             self._finalize_send(completed=True)
+
+    def _start_next_repeat(self):
+        """Called after a delay to start the next repeat."""
+        # Clean up the previous thread (should already be finished)
+        if self._send_thread:
+            self._send_thread.stop()
+            self._send_thread.wait(1000)
+            self._send_thread.deleteLater()
+            self._send_thread = None
+        # Start the next file
+        self._start_send()
 
     @pyqtSlot()
     def _on_thread_finished(self):
-        """Clean up the finished thread object."""
-        if self._send_thread:
+        """Clean up the finished thread object if not already done."""
+        # This slot may be called after we have already cleared the thread,
+        # so we only act if the thread still exists.
+        if self._send_thread and self._send_thread == self.sender():
             self._send_thread.deleteLater()
             self._send_thread = None
 
@@ -312,7 +325,6 @@ class UsbPage(QWidget):
 
     def _stop_file(self):
         """Stop sending immediately (cancel any pending repeats)."""
-        # Cancel any pending repeats
         self._repeats_remaining = 0
         if self._send_thread:
             self._send_thread.stop()
