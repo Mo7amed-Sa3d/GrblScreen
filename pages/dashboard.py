@@ -17,12 +17,13 @@ DEFAULT_SPEED = 2000.0  # mm/min
 
 class DashboardPage(QWidget):
     # Signals to main window for navigation
-    def __init__(self, grbl, on_usb, on_camera, on_settings, parent=None):
+    def __init__(self, grbl, on_usb, on_camera, on_settings, on_registration, parent=None):
         super().__init__(parent)
-        self._grbl        = grbl
-        self._on_usb      = on_usb
-        self._on_camera   = on_camera
-        self._on_settings = on_settings
+        self._grbl             = grbl
+        self._on_usb           = on_usb
+        self._on_camera        = on_camera
+        self._on_settings      = on_settings
+        self._on_registration  = on_registration
         self._step_idx    = DEFAULT_STEP
         self._paused      = False
         self._build()
@@ -163,41 +164,49 @@ class DashboardPage(QWidget):
         grid.setContentsMargins(10, 10, 10, 10)
         grid.setSpacing(10)
 
-        # Row 0 — 4 navigation/utility buttons
-        self._b_testcut  = self._abtn('✂\nTest Cut',     'actionBtn')
-        self._b_usb      = self._abtn('💾\nUSB Files',    'actionBtn')
-        self._b_camera   = self._abtn('📷\nCamera',       'actionBtn')
-        self._b_settings = self._abtn('⚙\nSettings',     'actionBtn')
+        # Row 0 — navigation/utility buttons
+        self._b_testcut      = self._abtn('✂\nTest Cut',       'actionBtn')
+        self._b_usb          = self._abtn('💾\nUSB Files',      'actionBtn')
+        self._b_camera       = self._abtn('📷\nCamera',         'actionBtn')
+        self._b_settings     = self._abtn('⚙\nSettings',       'actionBtn')
 
-        # Row 1 — 4 machine control buttons
-        self._b_knife_up   = self._abtn('▲\nKnife Up',    'actionBtnKnifeUp')
-        self._b_knife_down = self._abtn('▼\nKnife Down',  'actionBtnKnifeDown')
-        self._b_pause      = self._abtn('⏸\nPause',       'actionBtnPause')
-        self._b_cancel     = self._abtn('✕\nCancel',      'actionBtnCancel')
+        # Row 1 — registration mark alignment
+        self._b_registration = self._abtn('◎\nAlignment',      'actionBtn')
+        self._b_knife_up     = self._abtn('▲\nKnife Up',       'actionBtnKnifeUp')
+        self._b_knife_down   = self._abtn('▼\nKnife Down',     'actionBtnKnifeDown')
+        self._b_testcut2     = self._abtn('□\nTest 10×10',     'actionBtn')
 
-        grid.addWidget(self._b_testcut,    0, 0)
-        grid.addWidget(self._b_usb,        0, 1)
-        grid.addWidget(self._b_camera,     0, 2)
-        grid.addWidget(self._b_settings,   0, 3)
-        grid.addWidget(self._b_knife_up,   1, 0)
-        grid.addWidget(self._b_knife_down, 1, 1)
-        grid.addWidget(self._b_pause,      1, 2)
-        grid.addWidget(self._b_cancel,     1, 3)
+        # Row 2 — job control
+        self._b_pause        = self._abtn('⏸\nPause',          'actionBtnPause')
+        self._b_cancel       = self._abtn('✕\nCancel',         'actionBtnCancel')
+
+        grid.addWidget(self._b_testcut,       0, 0)
+        grid.addWidget(self._b_usb,           0, 1)
+        grid.addWidget(self._b_camera,        0, 2)
+        grid.addWidget(self._b_settings,      0, 3)
+        grid.addWidget(self._b_registration,  1, 0)
+        grid.addWidget(self._b_knife_up,      1, 1)
+        grid.addWidget(self._b_knife_down,    1, 2)
+        grid.addWidget(self._b_testcut2,      1, 3)
+        grid.addWidget(self._b_pause,         2, 0, 1, 2)
+        grid.addWidget(self._b_cancel,        2, 2, 1, 2)
 
         for col in range(4):
             grid.setColumnStretch(col, 1)
-        for row in range(2):
+        for row in range(3):
             grid.setRowStretch(row, 1)
 
         # Wire actions
-        self._b_testcut.clicked.connect(    self._test_cut)
-        self._b_usb.clicked.connect(        self._on_usb)
-        self._b_camera.clicked.connect(     self._on_camera)
-        self._b_settings.clicked.connect(   self._on_settings)
-        self._b_knife_up.clicked.connect(   self._grbl.knife_up_cmd)
-        self._b_knife_down.clicked.connect( self._knife_down)
-        self._b_pause.clicked.connect(      self._toggle_pause)
-        self._b_cancel.clicked.connect(     self._cancel)
+        self._b_testcut.clicked.connect(       self._test_cut)
+        self._b_testcut2.clicked.connect(      self._test_cut)
+        self._b_usb.clicked.connect(           self._on_usb)
+        self._b_camera.clicked.connect(        self._on_camera)
+        self._b_settings.clicked.connect(      self._on_settings)
+        self._b_registration.clicked.connect(  self._on_registration)
+        self._b_knife_up.clicked.connect(      self._grbl.knife_up_cmd)
+        self._b_knife_down.clicked.connect(    self._knife_down)
+        self._b_pause.clicked.connect(         self._toggle_pause)
+        self._b_cancel.clicked.connect(        self._cancel)
 
         return area
 
