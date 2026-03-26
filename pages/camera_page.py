@@ -53,7 +53,7 @@ class _MjpegThread(QThread):
     frame_ready = pyqtSignal(QImage)
     error       = pyqtSignal(str)
 
-    def __init__(self, binary, width=460, height=380, fps=15):
+    def __init__(self, binary, width=1920, height=1080, fps=15):
         super().__init__()
         self._bin  = binary
         self._w    = width
