@@ -38,6 +38,7 @@ class _ScanThread(QThread):
     # Avoids pyqtSignal(object) which is unreliable on some PyQt5 builds.
     scan_ok   = pyqtSignal(float, float, float, float)   # world_x, world_y, dx_px, dy_px
     scan_fail = pyqtSignal(str)                          # error message
+    frame_captured = pyqtSignal(object)                  # opencv BGR frame (numpy array)
 
     def __init__(self, mx, my):
         super().__init__()
@@ -45,6 +46,9 @@ class _ScanThread(QThread):
 
     def run(self):
         result = reg.scan_dot(self._mx, self._my)
+        # Emit the annotated frame if available
+        if hasattr(result, '_frame') and result._frame is not None:
+            self.frame_captured.emit(result._frame)
         if result.success:
             self.scan_ok.emit(result.world_x, result.world_y,
                               result.dx_px, result.dy_px)
@@ -126,6 +130,17 @@ class RegistrationPage(QWidget):
             self._mark_rows.append(row)
 
         div2 = QFrame(); div2.setFrameShape(QFrame.HLine); root.addWidget(div2)
+
+        # Camera feed display (shows during scanning)
+        self._camera_label = QLabel()
+        self._camera_label.setAlignment(Qt.AlignCenter)
+        self._camera_label.setMinimumHeight(250)
+        self._camera_label.setStyleSheet(
+            'background:#1a1a1a; border:2px solid #444; border-radius:8px; color:#666;')
+        self._camera_label.setText('Camera feed will appear here during scan')
+        root.addWidget(self._camera_label, 1)
+
+        div3 = QFrame(); div3.setFrameShape(QFrame.HLine); root.addWidget(div3)
 
         # Status / result message
         self._msg = QLabel('Press Start to begin automatic scan')
@@ -267,7 +282,38 @@ class RegistrationPage(QWidget):
         self._scan_thread = _ScanThread(mx, my)
         self._scan_thread.scan_ok.connect(self._on_scan_ok)
         self._scan_thread.scan_fail.connect(self._on_scan_fail)
+        self._scan_thread.frame_captured.connect(self._on_frame_captured)
         self._scan_thread.start()
+
+    @pyqtSlot(object)
+    def _on_frame_captured(self, bgr_frame):
+        """Display captured frame with opencv markings."""
+        try:
+            import cv2
+            import numpy as np
+            # Convert BGR frame to RGB for Qt display
+            if bgr_frame is not None:
+                h, w = bgr_frame.shape[:2]
+                # Convert BGR to RGB
+                rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+                # Ensure contiguous memory layout
+                rgb = np.ascontiguousarray(rgb)
+                # Convert to QImage
+                bytes_per_line = 3 * w
+                q_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                # Scale to fit label
+                label_w = self._camera_label.width()
+                label_h = self._camera_label.height()
+                if label_w > 0 and label_h > 0:
+                    pix = QPixmap.fromImage(q_img).scaled(
+                        label_w - 10, label_h - 10, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    self._camera_label.setPixmap(pix)
+                else:
+                    # If label size not yet known, just show the raw image
+                    pix = QPixmap.fromImage(q_img)
+                    self._camera_label.setPixmap(pix)
+        except Exception as e:
+            self._camera_label.setText('Frame display error: %s' % str(e))
 
     @pyqtSlot(float, float, float, float)
     def _on_scan_ok(self, world_x, world_y, dx_px, dy_px):
@@ -414,6 +460,8 @@ class RegistrationPage(QWidget):
             self._mark_row_highlight(i, 'idle')
             self._update_mark_display(i, None)
         self._overall_bar.setValue(0)
+        self._camera_label.setText('Camera feed will appear here during scan')
+        self._camera_label.setPixmap(QPixmap())
 
     def refresh_badge(self):
         """Sync badge with corrector state (called when page becomes visible)."""

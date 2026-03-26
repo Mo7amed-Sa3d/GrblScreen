@@ -71,13 +71,14 @@ def parse_regmarks(filepath):
 
 class DotScanResult:
     def __init__(self, success, world_x=0.0, world_y=0.0,
-                 dx_px=0.0, dy_px=0.0, message=''):
+                 dx_px=0.0, dy_px=0.0, message='', frame=None):
         self.success = success
         self.world_x = world_x
         self.world_y = world_y
         self.dx_px   = dx_px
         self.dy_px   = dy_px
         self.message = message
+        self._frame  = frame  # annotated frame for display
 
 
 # ── Affine correction ─────────────────────────────────────────────────────────
@@ -199,11 +200,12 @@ def _capture_subprocess():
 
 # ── Dot detection ─────────────────────────────────────────────────────────────
 
-def find_dot_in_frame(gray):
+def find_dot_in_frame(gray, threshold=None):
     """
-    Find darkest circular blob in frame.
+    Find darkest circular blob in frame with intelligent threshold selection.
     Returns (dx_px, dy_px, annotated_bgr, error_str).
       +dx = dot is RIGHT of centre, +dy = dot is BELOW centre.
+    If dot not found with initial threshold, tries multiple thresholds automatically.
     """
     try:
         import cv2, numpy as np
@@ -213,41 +215,98 @@ def find_dot_in_frame(gray):
     h, w = gray.shape
     cx, cy = w // 2, h // 2
 
-    _, thresh = cv2.threshold(gray, BLOB_DARK_MAX, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # If no threshold specified, use default
+    if threshold is None:
+        threshold = BLOB_DARK_MAX
 
-    candidates = []
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if not (BLOB_MIN_AREA <= area <= BLOB_MAX_AREA):
+    # List of thresholds to try (primary first)
+    thresholds_to_try = [threshold]
+    # Add adaptive thresholds based on image histogram
+    if threshold == BLOB_DARK_MAX:
+        # Try slightly lighter and darker thresholds
+        thresholds_to_try.extend([threshold - 20, threshold + 20, threshold - 40, threshold + 40])
+
+    ann = None
+    best_match = None
+    used_threshold = threshold
+
+    # Try each threshold until we find a valid dot
+    for try_threshold in thresholds_to_try:
+        if try_threshold < 1 or try_threshold > 255:
             continue
-        peri = cv2.arcLength(cnt, True)
-        if peri == 0:
-            continue
-        if 4 * math.pi * area / (peri**2) < BLOB_MIN_ROUND:
-            continue
-        M = cv2.moments(cnt)
-        if M['m00'] == 0:
-            continue
-        bx = int(M['m10'] / M['m00'])
-        by = int(M['m01'] / M['m00'])
-        candidates.append((math.hypot(bx-cx, by-cy), bx, by, cnt))
 
-    if not candidates:
-        return 0, 0, gray, 'No dot found (threshold=%d). Check lighting.' % BLOB_DARK_MAX
+        _, thresh = cv2.threshold(gray, try_threshold, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    _, bx, by, cnt = min(candidates, key=lambda c: c[0])
-    dx, dy = bx - cx, by - cy
+        candidates = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if not (BLOB_MIN_AREA <= area <= BLOB_MAX_AREA):
+                continue
+            peri = cv2.arcLength(cnt, True)
+            if peri == 0:
+                continue
+            circularity = 4 * math.pi * area / (peri**2)
+            if circularity < BLOB_MIN_ROUND:
+                continue
+            M = cv2.moments(cnt)
+            if M['m00'] == 0:
+                continue
+            bx = int(M['m10'] / M['m00'])
+            by = int(M['m01'] / M['m00'])
+            candidates.append((math.hypot(bx-cx, by-cy), bx, by, cnt))
 
-    if abs(dx) > MAX_PX_OFFSET or abs(dy) > MAX_PX_OFFSET:
-        return dx, dy, gray, 'Dot too far from centre (%+d, %+d px)' % (dx, dy)
+        if candidates:
+            _, bx, by, cnt = min(candidates, key=lambda c: c[0])
+            dx, dy = bx - cx, by - cy
 
+            if abs(dx) <= MAX_PX_OFFSET and abs(dy) <= MAX_PX_OFFSET:
+                # Found valid dot!
+                ann = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                
+                # Draw threshold visualization
+                cv2.rectangle(ann, (5, 5), (w-5, h-5), (50, 50, 200), 2)
+                cv2.putText(ann, 'T:%d' % try_threshold, (10, 25),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                
+                # Draw dot detection
+                cv2.drawContours(ann, [cnt], -1, (0, 165, 255), 2)
+                cv2.circle(ann, (bx, by), 6, (0, 165, 255), -1)
+                cv2.circle(ann, (bx, by), 12, (0, 165, 255), 1)
+                
+                # Draw crosshairs at center
+                cv2.line(ann, (cx, 0), (cx, h), (80, 80, 80), 1)
+                cv2.line(ann, (0, cy), (w, cy), (80, 80, 80), 1)
+                
+                # Draw offset vector
+                cv2.arrowedLine(ann, (cx, cy), (bx, by), (0, 255, 0), 2)
+                
+                used_threshold = try_threshold
+                best_match = (dx, dy, ann)
+                break
+
+    if best_match:
+        dx, dy, ann = best_match
+        msg = 'Threshold: %d' % used_threshold if used_threshold != threshold else None
+        return dx, dy, ann, msg
+
+    # No dot found with any threshold
     ann = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    cv2.drawContours(ann, [cnt], -1, (0, 165, 255), 2)
-    cv2.circle(ann, (bx, by), 6, (0, 165, 255), -1)
-    cv2.line(ann, (cx, 0), (cx, h), (80, 80, 80), 1)
-    cv2.line(ann, (0, cy), (w, cy), (80, 80, 80), 1)
-    return dx, dy, ann, None
+    cv2.rectangle(ann, (5, 5), (w-5, h-5), (50, 50, 200), 2)
+    cv2.putText(ann, 'T:%d-Failed' % threshold, (10, 25),
+               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    
+    error_detail = (
+        'No dot found. Tried thresholds %d-%d.\n'
+        'Adjust BLOB_DARK_MAX or check:\n'
+        '  - Lighting (too bright/dark?)\n'
+        '  - Dot size (must be %d-%d pixels²)\n'
+        '  - Dot shape (must be %.1f+ circular)'
+        % (min(thresholds_to_try), max(thresholds_to_try),
+           BLOB_MIN_AREA, BLOB_MAX_AREA, BLOB_MIN_ROUND)
+    )
+    
+    return 0, 0, ann, error_detail
 
 
 # ── Public: scan one dot ──────────────────────────────────────────────────────
@@ -256,13 +315,14 @@ def scan_dot(machine_x, machine_y):
     """
     Capture frame and find dot. machine_x/y = current KNIFE position.
     Returns DotScanResult with dot's actual world position.
+    Also includes annotated frame with scanning marks for display.
     """
     gray, err = capture_frame_gray()
     if gray is None:
         return DotScanResult(False, message=err or 'Capture failed')
-    dx_px, dy_px, _, err = find_dot_in_frame(gray)
+    dx_px, dy_px, annotated_frame, err = find_dot_in_frame(gray)
     if err:
-        return DotScanResult(False, message=err)
+        return DotScanResult(False, message=err, frame=annotated_frame)
 
     # Camera is CAM_OFFSET from knife. Dot world position:
     # camera centre is at (machine_x + CAM_OFFSET_X, machine_y + CAM_OFFSET_Y)
@@ -272,4 +332,4 @@ def scan_dot(machine_x, machine_y):
     world_y = machine_y + CAM_OFFSET_Y_MM - dy_px * MM_PER_PIXEL
 
     return DotScanResult(True, world_x=world_x, world_y=world_y,
-                         dx_px=dx_px, dy_px=dy_px)
+                         dx_px=dx_px, dy_px=dy_px, frame=annotated_frame)
