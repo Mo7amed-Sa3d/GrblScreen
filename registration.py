@@ -269,17 +269,26 @@ def find_dot_in_frame(gray, threshold=None):
                 cv2.putText(ann, 'T:%d' % try_threshold, (10, 25),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 
-                # Draw dot detection
+                # Draw dot detection contours
                 cv2.drawContours(ann, [cnt], -1, (0, 165, 255), 2)
-                cv2.circle(ann, (bx, by), 6, (0, 165, 255), -1)
-                cv2.circle(ann, (bx, by), 12, (0, 165, 255), 1)
+                
+                # Draw circles (scaled to fit in frame)
+                # Limit circle radius to not exceed frame boundaries
+                max_radius = min(bx, by, w - bx, h - by) - 2
+                radius_outer = min(8, max_radius)
+                radius_inner = min(4, max_radius)
+                if radius_inner > 0:
+                    cv2.circle(ann, (bx, by), radius_inner, (0, 165, 255), -1)
+                if radius_outer > 0:
+                    cv2.circle(ann, (bx, by), radius_outer, (0, 165, 255), 1)
                 
                 # Draw crosshairs at center
                 cv2.line(ann, (cx, 0), (cx, h), (80, 80, 80), 1)
                 cv2.line(ann, (0, cy), (w, cy), (80, 80, 80), 1)
                 
-                # Draw offset vector
-                cv2.arrowedLine(ann, (cx, cy), (bx, by), (0, 255, 0), 2)
+                # Draw offset vector (arrow from center to dot)
+                if abs(bx - cx) > 2 or abs(by - cy) > 2:  # Only draw if offset is visible
+                    cv2.arrowedLine(ann, (cx, cy), (bx, by), (0, 255, 0), 2)
                 
                 used_threshold = try_threshold
                 best_match = (dx, dy, ann)
