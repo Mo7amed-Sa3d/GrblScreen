@@ -29,7 +29,7 @@ CAM_OFFSET_Y_MM =  0.0    # mm camera is ABOVE knife
 MM_PER_PIXEL    =  0.094  # mm/pixel at paper surface (calibrate!)
 
 # ── Blob detection ────────────────────────────────────────────────────────────
-BLOB_DARK_MAX  = 250     # grayscale threshold for "dark dot"
+BLOB_DARK_MAX  = 100     # grayscale threshold for "dark dot"
 BLOB_MIN_AREA  = 150    # pixels²
 BLOB_MAX_AREA  = 8000   # pixels²
 BLOB_MIN_ROUND = 0.45   # 0–1 circularity
