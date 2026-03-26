@@ -6,33 +6,56 @@
 #   1 USB file browser
 #   2 Camera feed
 #   3 Settings
-#   4 Registration marks  (dynamically configured per file)
+#   4 Registration marks  (built dynamically; placeholder until first use)
 
 import os
-from PyQt5.QtWidgets import QMainWindow, QWidget, QStackedWidget
-from PyQt5.QtCore    import Qt, QTimer
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QStackedWidget, QLabel, QVBoxLayout
+)
+from PyQt5.QtCore import Qt, QTimer
 
-from grbl_connection              import GrblConnection
-from tilt_corrector               import TiltCorrector
-from pages.dashboard              import DashboardPage
-from pages.usb_page               import UsbPage
-from pages.camera_page            import CameraPage
-from pages.settings_page          import SettingsPage
-from pages.registration_page      import RegistrationPage
+from grbl_connection         import GrblConnection
+from tilt_corrector          import TiltCorrector
+from pages.dashboard         import DashboardPage
+from pages.usb_page          import UsbPage
+from pages.camera_page       import CameraPage
+from pages.settings_page     import SettingsPage
+from pages.registration_page import RegistrationPage
 
-S_DASH  = 0
-S_USB   = 1
-S_CAM   = 2
-S_SET   = 3
-S_REG   = 4
+S_DASH = 0
+S_USB  = 1
+S_CAM  = 2
+S_SET  = 3
+S_REG  = 4
+
+
+def _no_file_placeholder():
+    """Widget shown at S_REG when no RegMarks file has been selected yet."""
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lay.setAlignment(Qt.AlignCenter)
+    lbl = QLabel(
+        '◎  Alignment\n\n'
+        'No registration marks loaded.\n\n'
+        'Select a G-code file that contains\n'
+        ';RegMarks(x1,y1)(x2,y2)(x3,y3)(x4,y4)\n'
+        'from the USB page and press Run.'
+    )
+    lbl.setAlignment(Qt.AlignCenter)
+    lbl.setWordWrap(True)
+    lbl.setStyleSheet(
+        'color:#aaa; font-size:15px; padding:20px;')
+    lay.addWidget(lbl)
+    return w
 
 
 class MainWindow(QMainWindow):
     def __init__(self, grbl: GrblConnection):
         super().__init__()
-        self._grbl      = grbl
-        self._corrector = TiltCorrector(grbl)
-        self._reg_page  = None   # created dynamically when design_pts are known
+        self._grbl          = grbl
+        self._corrector     = TiltCorrector(grbl)
+        self._reg_page      = None    # RegistrationPage, or None
+        self._last_design_pts = None  # persisted for dashboard alignment button
 
         self.setWindowTitle('Cutter Screen')
         self.setWindowFlags(Qt.FramelessWindowHint)
@@ -41,6 +64,8 @@ class MainWindow(QMainWindow):
 
         self._build()
         QTimer.singleShot(600, self._auto_connect)
+
+    # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build(self):
         self._stack = QStackedWidget()
@@ -52,7 +77,7 @@ class MainWindow(QMainWindow):
             on_usb          = lambda: self._go(S_USB),
             on_camera       = lambda: self._go(S_CAM),
             on_settings     = lambda: self._go(S_SET),
-            on_registration = lambda: self._go(S_REG),
+            on_registration = self._on_dashboard_alignment,
         )
         self._usb = UsbPage(
             grbl    = self._corrector,
@@ -66,59 +91,98 @@ class MainWindow(QMainWindow):
             on_back = lambda: self._go(S_DASH),
         )
 
-        # Placeholder for registration page (replaced when file is selected)
-        self._reg_placeholder = QWidget()
+        self._stack.addWidget(self._dash)              # 0
+        self._stack.addWidget(self._usb)               # 1
+        self._stack.addWidget(self._cam)               # 2
+        self._stack.addWidget(self._settings)          # 3
+        self._stack.addWidget(_no_file_placeholder())  # 4 — replaced later
 
-        self._stack.addWidget(self._dash)             # 0
-        self._stack.addWidget(self._usb)              # 1
-        self._stack.addWidget(self._cam)              # 2
-        self._stack.addWidget(self._settings)         # 3
-        self._stack.addWidget(self._reg_placeholder)  # 4
-
-        # USB page requests registration when a RegMarks file is selected
+        # USB page requests registration before each run
         self._usb.request_registration.connect(self._start_registration)
 
         self._go(S_DASH)
 
+    # ── Navigation ────────────────────────────────────────────────────────────
+
     def _go(self, idx):
-        if idx == S_REG and self._reg_page:
-            self._reg_page.refresh_badge()
         self._stack.setCurrentIndex(idx)
 
-    # ── Registration ──────────────────────────────────────────────────────────
-
-    def _start_registration(self, design_pts):
-        """
-        Build a fresh RegistrationPage for these design positions and show it.
-        Uses a stable swap at index S_REG=4 so stack indices never shift.
-        """
-        # Build new registration page
-        new_page = RegistrationPage(
-            corrector   = self._corrector,
-            design_pts  = design_pts,
-            on_complete = self._on_registration_complete,
-            on_back     = self._on_registration_skipped,
-        )
-
-        # Replace whatever is currently at slot S_REG with the new page
+    def _replace_reg_slot(self, new_widget):
+        """Swap whatever is at index S_REG with new_widget, keeping index stable."""
         old = self._stack.widget(S_REG)
-        self._stack.insertWidget(S_REG, new_page)  # inserts at S_REG, pushes old to S_REG+1
+        self._stack.insertWidget(S_REG, new_widget)
         if old is not None:
             self._stack.removeWidget(old)
             old.deleteLater()
 
-        self._reg_page = new_page
+    # ── Dashboard alignment button ─────────────────────────────────────────────
+
+    def _on_dashboard_alignment(self):
+        """
+        Called when the user presses the ◎ Alignment button on the dashboard.
+
+        If design_pts are available from a previously selected file:
+          → build a RegistrationPage and show it.
+          on_complete goes back to the dashboard (not USB), no file send.
+
+        If no design_pts have ever been loaded:
+          → show the placeholder explaining how to use alignment,
+            then navigate to USB so the user can select a file.
+        """
+        if self._last_design_pts:
+            self._build_reg_page(
+                design_pts  = self._last_design_pts,
+                on_complete = self._on_dashboard_alignment_complete,
+                on_back     = lambda: self._go(S_DASH),
+            )
+            self._go(S_REG)
+        else:
+            # No design_pts known — show placeholder then go to USB
+            self._replace_reg_slot(_no_file_placeholder())
+            self._reg_page = None
+            self._go(S_REG)
+            # After a short delay navigate to USB so user knows where to go
+            QTimer.singleShot(1800, lambda: self._go(S_USB))
+
+    def _on_dashboard_alignment_complete(self, success):
+        """After alignment from dashboard — just go back to dashboard."""
+        self._go(S_DASH)
+
+    # ── USB-triggered registration ─────────────────────────────────────────────
+
+    def _start_registration(self, design_pts):
+        """
+        Called by USB page before each run (every repeat).
+        Builds a fresh RegistrationPage, shows it, then calls back into USB.
+        """
+        self._last_design_pts = design_pts  # persist for dashboard button
+        self._build_reg_page(
+            design_pts  = design_pts,
+            on_complete = self._on_usb_registration_complete,
+            on_back     = self._on_usb_registration_skipped,
+        )
         self._go(S_REG)
 
-    def _on_registration_complete(self, success):
-        """Registration done — go back to USB page and start the file."""
+    def _on_usb_registration_complete(self, success):
         self._go(S_USB)
         self._usb.on_registration_complete(success)
 
-    def _on_registration_skipped(self):
-        """User pressed Skip on registration page."""
+    def _on_usb_registration_skipped(self):
         self._go(S_USB)
-        self._usb.on_registration_complete(False)   # False = no correction armed
+        self._usb.on_registration_complete(False)
+
+    # ── Registration page builder ──────────────────────────────────────────────
+
+    def _build_reg_page(self, design_pts, on_complete, on_back):
+        """Build a new RegistrationPage and install it at S_REG."""
+        page = RegistrationPage(
+            corrector   = self._corrector,
+            design_pts  = design_pts,
+            on_complete = on_complete,
+            on_back     = on_back,
+        )
+        self._replace_reg_slot(page)
+        self._reg_page = page
 
     # ── Auto-connect ──────────────────────────────────────────────────────────
 

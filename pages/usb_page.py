@@ -1,9 +1,4 @@
 # pages/usb_page.py
-# USB G-code file browser with:
-#   • Repeat count (run same file N times)
-#   • Automatic ;RegMarks detection → triggers registration before first run
-#   • Wait for GRBL Idle between repeats before starting next run
-#   • File lines emitted as signals to main thread (QSerialPort safety)
 
 import os
 from PyQt5.QtWidgets import (
@@ -33,10 +28,6 @@ def _find_usb_roots():
 
 
 class _FileLoaderThread(QThread):
-    """
-    Reads G-code file from disk, emits each line as a signal.
-    Serial writes happen in the main thread via the connected slot.
-    """
     send_line = pyqtSignal(str)
     progress  = pyqtSignal(int, int)
     done      = pyqtSignal()
@@ -61,28 +52,38 @@ class _FileLoaderThread(QThread):
                     break
                 self.send_line.emit(line)
                 self.progress.emit(i + 1, total)
-                self.msleep(1)   # yield to Qt's signal dispatcher
-            self.done.emit()
+                self.msleep(1)
+            # ── Bug fix: only emit done when NOT manually stopped ──
+            # Without this check, done fires even after stop(), which
+            # re-triggers _on_file_streamed and restarts the idle timer,
+            # causing the repeat loop to continue after the user pressed Stop.
+            if not self._stop:
+                self.done.emit()
         except Exception as e:
             self.error.emit(str(e))
 
 
 class UsbPage(QWidget):
-    # Emitted when a ;RegMarks file is selected and Run is pressed.
-    # Main window intercepts this to show registration page.
+    # Emitted to request registration before a run.
+    # Main window shows RegistrationPage, then calls on_registration_complete().
     request_registration = pyqtSignal(list)   # list of 4 (x,y) design tuples
 
     def __init__(self, grbl, on_back, parent=None):
         super().__init__(parent)
-        self._grbl           = grbl
-        self._on_back        = on_back
-        self._selected_path  = None
-        self._send_thread    = None
+        self._grbl          = grbl
+        self._on_back       = on_back
+        self._selected_path = None
+        self._design_pts    = None
+        self._send_thread   = None
         self._current_repeat = 0
         self._total_repeats  = 1
-        self._registered     = False   # True after registration completed
 
-        # Timer: polls GRBL Idle between repeats
+        # ── Hard stop flag ────────────────────────────────────────────────────
+        # Set True in _stop_all(); checked in every async continuation
+        # (_on_file_streamed, _check_idle_for_next_repeat) so no further
+        # repeat steps execute after the user presses Stop or Cancel.
+        self._stopped = False
+
         self._idle_timer = QTimer(self)
         self._idle_timer.setInterval(500)
         self._idle_timer.timeout.connect(self._check_idle_for_next_repeat)
@@ -96,7 +97,6 @@ class UsbPage(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        # Header
         hdr = QHBoxLayout()
         btn_back = QPushButton('◀  Back')
         btn_back.setProperty('role', 'back')
@@ -105,7 +105,8 @@ class UsbPage(QWidget):
         hdr.addWidget(btn_back)
 
         self._path_lbl = QLabel('USB Drive')
-        self._path_lbl.setStyleSheet('font-size:14px; color:#ff8c00; font-weight:bold;')
+        self._path_lbl.setStyleSheet(
+            'font-size:14px; color:#ff8c00; font-weight:bold;')
         hdr.addWidget(self._path_lbl, 1)
 
         btn_ref = QPushButton('⟳')
@@ -116,24 +117,21 @@ class UsbPage(QWidget):
 
         div = QFrame(); div.setFrameShape(QFrame.HLine); root.addWidget(div)
 
-        # File list
         self._list = QListWidget()
         self._list.itemClicked.connect(self._on_click)
         self._list.itemDoubleClicked.connect(self._on_double)
         root.addWidget(self._list, 1)
 
-        # Selected file row
         sel_row = QHBoxLayout()
         self._sel_lbl = QLabel('No file selected')
         self._sel_lbl.setStyleSheet('color:#aaa; font-size:13px;')
         sel_row.addWidget(self._sel_lbl, 1)
         root.addLayout(sel_row)
 
-        # Repeat count + run/stop row
         run_row = QHBoxLayout()
         run_row.setSpacing(10)
-
         run_row.addWidget(QLabel('Repeat:'))
+
         self._repeat_spin = QSpinBox()
         self._repeat_spin.setRange(1, 999)
         self._repeat_spin.setValue(1)
@@ -143,10 +141,9 @@ class UsbPage(QWidget):
             'font-size:16px; font-weight:bold; color:#ff8c00;')
         run_row.addWidget(self._repeat_spin)
 
-        self._repeat_lbl = QLabel('time(s)')
-        self._repeat_lbl.setStyleSheet('color:#aaa; font-size:13px;')
-        run_row.addWidget(self._repeat_lbl)
-
+        lbl = QLabel('time(s)')
+        lbl.setStyleSheet('color:#aaa; font-size:13px;')
+        run_row.addWidget(lbl)
         run_row.addStretch()
 
         self._regmarks_badge = QLabel('')
@@ -169,7 +166,6 @@ class UsbPage(QWidget):
         run_row.addWidget(self._btn_stop)
         root.addLayout(run_row)
 
-        # Progress label
         self._prog_lbl = QLabel('')
         self._prog_lbl.setAlignment(Qt.AlignCenter)
         self._prog_lbl.setStyleSheet('color:#aaa; font-size:13px;')
@@ -188,7 +184,8 @@ class UsbPage(QWidget):
 
         roots = _find_usb_roots()
         if not roots:
-            self._list.addItem('⚠  No USB drive found — plug in drive and press ⟳')
+            self._list.addItem(
+                '⚠  No USB drive found — plug in drive and press ⟳')
             self._path_lbl.setText('No USB drive')
             return
 
@@ -223,7 +220,8 @@ class UsbPage(QWidget):
 
     def _on_double(self, item):
         d = item.data(Qt.UserRole)
-        if not d: return
+        if not d:
+            return
         if d[0] == 'dir':
             self._list_dir(d[1])
         elif d[0] == 'file':
@@ -232,119 +230,148 @@ class UsbPage(QWidget):
 
     def _select_file(self, path):
         self._selected_path = path
-        self._registered    = False   # new file = need re-registration
-
         self._sel_lbl.setText(os.path.basename(path))
-        self._sel_lbl.setStyleSheet('color:#ff8c00; font-weight:bold; font-size:13px;')
+        self._sel_lbl.setStyleSheet(
+            'color:#ff8c00; font-weight:bold; font-size:13px;')
         self._btn_run.setEnabled(True)
 
-        # Check for ;RegMarks comment
         from registration import parse_regmarks
         pts = parse_regmarks(path)
         if pts:
-            self._regmarks_badge.setText('◎ RegMarks found')
+            self._design_pts = pts
+            self._regmarks_badge.setText('◎ RegMarks — aligns before each run')
             self._regmarks_badge.setStyleSheet(
                 'font-size:12px; color:#ff8c00; font-weight:bold; padding:3px 8px;')
-            self._design_pts = pts
         else:
-            self._regmarks_badge.setText('')
             self._design_pts = None
+            self._regmarks_badge.setText('')
 
     # ── Run logic ─────────────────────────────────────────────────────────────
 
     def _on_run_pressed(self):
-        if not self._selected_path: return
-        if self._send_thread and self._send_thread.isRunning(): return
+        if not self._selected_path:
+            return
+        if self._send_thread and self._send_thread.isRunning():
+            return
 
+        self._stopped        = False
         self._total_repeats  = self._repeat_spin.value()
         self._current_repeat = 0
 
-        # If file has RegMarks and we haven't registered this session:
-        if self._design_pts and not self._registered:
-            self.request_registration.emit(self._design_pts)
-            # Actual file start is triggered by on_registration_complete()
-            return
-
-        # No RegMarks or already registered — start directly
-        self._start_first_run()
-
-    def on_registration_complete(self, success):
-        """Called by main window after registration page finishes."""
-        if success:
-            self._registered = True
-        # Start the file regardless (user can skip registration)
-        self._start_first_run()
-
-    def _start_first_run(self):
         self._btn_run.setEnabled(False)
         self._btn_stop.setEnabled(True)
+
+        # Every run (including first) goes through _begin_repeat()
+        # which handles optional registration before each run.
+        self._begin_repeat()
+
+    def _begin_repeat(self):
+        """
+        Start one repeat: do registration first (if RegMarks exist),
+        then start the file send.
+        Registration is done before EVERY repeat so alignment is fresh each time.
+        """
+        if self._stopped:
+            return
+        n = self._current_repeat + 1
+        t = self._total_repeats
+        self._prog_lbl.setText(
+            'Run %d / %d — aligning…' % (n, t) if self._design_pts
+            else 'Run %d / %d — starting…' % (n, t)
+        )
+
+        if self._design_pts:
+            # Emit signal → main window builds & shows RegistrationPage
+            self.request_registration.emit(self._design_pts)
+            # _start_send() is called from on_registration_complete()
+        else:
+            self._start_send()
+
+    def on_registration_complete(self, success):
+        """
+        Called by main window after each RegistrationPage finishes
+        (success=True) or is skipped (success=False).
+        Either way, proceed with the file send for this repeat.
+        """
+        if self._stopped:
+            return
         self._start_send()
 
     def _start_send(self):
-        """Start streaming the file for the current repeat."""
-        n     = self._current_repeat + 1
-        total = self._total_repeats
+        if self._stopped:
+            return
+        n = self._current_repeat + 1
+        t = self._total_repeats
         self._prog_lbl.setText(
-            'Run %d / %d — sending…' % (n, total)
-            if total > 1 else 'Sending…'
-        )
+            'Run %d / %d — sending…' % (n, t) if t > 1 else 'Sending…')
+
+        # Disconnect previous thread's signals to prevent double-firing
+        # when a new thread is created for each repeat.
+        if self._send_thread is not None:
+            try:
+                self._send_thread.send_line.disconnect()
+                self._send_thread.progress.disconnect()
+                self._send_thread.done.disconnect()
+                self._send_thread.error.disconnect()
+            except Exception:
+                pass
 
         self._send_thread = _FileLoaderThread(self._selected_path)
-        self._send_thread.send_line.connect(self._grbl.send)   # main-thread send
+        self._send_thread.send_line.connect(self._grbl.send)
         self._send_thread.progress.connect(self._on_progress)
         self._send_thread.done.connect(self._on_file_streamed)
         self._send_thread.error.connect(self._on_error)
         self._send_thread.start()
 
-    # ── Progress / done ───────────────────────────────────────────────────────
+    # ── Progress / completion ─────────────────────────────────────────────────
 
     @pyqtSlot(int, int)
     def _on_progress(self, sent, total):
-        n = self._current_repeat + 1
-        t = self._total_repeats
+        if self._stopped:
+            return
+        n   = self._current_repeat + 1
+        t   = self._total_repeats
         pct = int(sent / total * 100) if total else 0
         if t > 1:
-            self._prog_lbl.setText('Run %d/%d — %d/%d lines (%d%%)' % (n, t, sent, total, pct))
+            self._prog_lbl.setText(
+                'Run %d/%d — %d/%d lines (%d%%)' % (n, t, sent, total, pct))
         else:
             self._prog_lbl.setText('%d/%d lines (%d%%)' % (sent, total, pct))
 
     @pyqtSlot()
     def _on_file_streamed(self):
         """
-        All lines have been queued into GrblConnection.
-        GRBL is still cutting. Poll for Idle to know when it's truly finished.
-        If more repeats remain, wait for Idle then start next run.
+        All lines queued. Machine is still cutting.
+        Poll for Idle, then either start next repeat or finish.
+        Guard: if _stopped, do nothing.
         """
+        if self._stopped:
+            return
         n = self._current_repeat + 1
         t = self._total_repeats
         if t > 1:
             self._prog_lbl.setText(
-                'Run %d/%d queued ✓ — waiting for machine to finish…' % (n, t))
+                'Run %d/%d queued ✓ — waiting for machine…' % (n, t))
         else:
             self._prog_lbl.setText('File queued ✓ — machine is cutting')
 
-        if self._current_repeat + 1 < self._total_repeats:
-            # More repeats — wait for GRBL to become Idle
-            self._idle_timer.start()
-        else:
-            # Last (or only) repeat — just show status, enable Run
-            # but keep stop available until machine actually finishes
-            self._idle_timer.start()   # still poll to update UI when done
+        # Always poll — whether more repeats remain or not (to update UI)
+        self._idle_timer.start()
 
     def _check_idle_for_next_repeat(self):
-        """Polls GRBL state to detect when machine finishes current run."""
-        if self._grbl.state not in ('Idle',):
+        """Poll GRBL Idle. When machine finishes, start next repeat or finish."""
+        # Hard stop check — belt-and-braces guard
+        if self._stopped:
+            self._idle_timer.stop()
+            return
+
+        if self._grbl.state != 'Idle':
             return   # still running, keep polling
 
         self._idle_timer.stop()
         self._current_repeat += 1
 
-        if self._current_repeat < self._total_repeats:
-            # Start next repeat
-            self._prog_lbl.setText(
-                'Starting run %d / %d…' % (self._current_repeat + 1, self._total_repeats))
-            self._start_send()
-        else:
+        if self._current_repeat >= self._total_repeats:
             # All repeats done
             t = self._total_repeats
             self._prog_lbl.setText(
@@ -352,13 +379,26 @@ class UsbPage(QWidget):
             self._btn_run.setEnabled(True)
             self._btn_stop.setEnabled(False)
             self._current_repeat = 0
+        else:
+            # More repeats — go back through alignment + send
+            self._begin_repeat()
+
+    # ── Stop ─────────────────────────────────────────────────────────────────
 
     def _stop_all(self):
+        """
+        Immediately stop everything. The _stopped flag blocks every
+        async continuation so no further repeats can be triggered.
+        """
+        self._stopped = True          # ← blocks _on_file_streamed + timer
         self._idle_timer.stop()
-        if self._send_thread:
-            self._send_thread.stop()
-        self._grbl.reset()
-        self._grbl.send('M5')
+
+        if self._send_thread is not None:
+            self._send_thread.stop()  # sets _stop flag; thread won't emit done
+
+        self._grbl.reset()            # Ctrl-X: clears GRBL queue
+        self._grbl.send('M5')         # knife up
+
         self._current_repeat = 0
         self._btn_run.setEnabled(True)
         self._btn_stop.setEnabled(False)
@@ -366,6 +406,8 @@ class UsbPage(QWidget):
 
     @pyqtSlot(str)
     def _on_error(self, msg):
+        if self._stopped:
+            return
         self._idle_timer.stop()
         self._btn_run.setEnabled(True)
         self._btn_stop.setEnabled(False)
