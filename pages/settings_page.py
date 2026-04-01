@@ -1,5 +1,5 @@
 # pages/settings_page.py
-# Settings screen — MCU connection + WiFi + System (3 tabs)
+# Settings screen — MCU connection + WiFi + System + Terminal (4 tabs)
 
 import subprocess, os
 from PyQt5.QtWidgets import (
@@ -7,10 +7,11 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit,
     QListWidget, QListWidgetItem, QFrame,
     QTabWidget, QSlider, QProgressBar,
-    QMessageBox, QScrollArea, QSpinBox
+    QMessageBox, QScrollArea, QPlainTextEdit, QSpinBox,
+    QGridLayout, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtGui  import QColor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QEvent
+from PyQt5.QtGui  import QColor, QGuiApplication
 
 
 # ── WiFi threads ──────────────────────────────────────────────────────────────
@@ -62,6 +63,84 @@ def _run(cmd):
     except Exception: return 1, '', ''
 
 
+class _TerminalLineEdit(QLineEdit):
+    def __init__(self, *args, on_focus=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_focus = on_focus
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        if self._on_focus:
+            self._on_focus()
+
+
+class _OnScreenKeyboard(QWidget):
+    def __init__(self, target, on_enter=None, parent=None):
+        super().__init__(parent)
+        self._target = target
+        self._on_enter = on_enter
+        self.setVisible(False)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setStyleSheet(
+            'background:#222; border:1px solid #444; padding:6px;'
+            'QPushButton { min-height:36px; min-width:32px; font-size:14px; color:#eee; background:#333; border:1px solid #555; border-radius:3px; }'
+            'QPushButton:pressed { background:#555; }'
+        )
+        # Main vertical layout for rows
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        rows = [
+            '1234567890-=',
+            'qwertyuiop$&',
+            'asdfghjkl;\'',
+            'zxcvbnm,./'
+        ]
+
+        for keys in rows:
+            row = QHBoxLayout()
+            row.setSpacing(2)
+            for ch in keys:
+                btn = QPushButton(ch.upper())
+                btn.clicked.connect(lambda _, c=ch: self._type(c))
+                btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)   # <-- fixed vertical size
+                btn.setFixedHeight(36)  # ensure consistent height
+                row.addWidget(btn)
+            layout.addLayout(row)
+
+        # Bottom control row
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        for label, action in (('⌫', 'BACK'),('Space', ' '), ('Enter', 'ENTER'), ('Hide', 'HIDE')):
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _, a=action: self._special(a))
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setFixedHeight(36)
+            row.addWidget(btn)
+        layout.addLayout(row)
+
+    def _type(self, ch):
+        text = self._target.text()
+        pos = self._target.cursorPosition()
+        self._target.setText(text[:pos] + ch + text[pos:])
+        self._target.setCursorPosition(pos + 1)
+
+    def _special(self, action):
+        if action == ' ':
+            self._type(' ')
+        elif action == 'BACK':
+            text = self._target.text()
+            pos = self._target.cursorPosition()
+            if pos > 0:
+                self._target.setText(text[:pos-1] + text[pos:])
+                self._target.setCursorPosition(pos-1)
+        elif action == 'ENTER':
+            if self._on_enter:
+                self._on_enter()
+        elif action == 'HIDE':
+            self.setVisible(False)
+
 # ── Settings page ─────────────────────────────────────────────────────────────
 class SettingsPage(QWidget):
     def __init__(self, grbl, on_back, parent=None):
@@ -69,6 +148,7 @@ class SettingsPage(QWidget):
         self._grbl   = grbl
         self._on_back = on_back
         self._scan_t = self._conn_t = None
+        self._kbd_proc = None
         self._build()
 
     def _build(self):
@@ -93,14 +173,19 @@ class SettingsPage(QWidget):
         self._tabs.addTab(self._build_mcu(),    '⟳  MCU')
         self._tabs.addTab(self._build_wifi(),   '📶  WiFi')
         self._tabs.addTab(self._build_system(), '🖥  System')
+        self._tabs.addTab(self._build_terminal(), '⌨  Terminal')
         root.addWidget(self._tabs, 1)
+
+        # Hide keyboard when switching tabs
+        self._tabs.currentChanged.connect(self._hide_keyboard)
 
         self._grbl.connected.connect(   self._on_connected)
         self._grbl.disconnected.connect(self._on_disconnected)
 
-    # ── MCU tab ───────────────────────────────────────────────────────────────
+    # ── MCU tab (connection + settings) ──────────────────────────────────────
     def _build_mcu(self):
         w = QWidget()
+        w.setObjectName("MCUTab")
         lay = QVBoxLayout(w)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(10)
@@ -130,14 +215,16 @@ class SettingsPage(QWidget):
         cr.addStretch()
         lay.addLayout(cr)
 
-        div = QFrame(); div.setFrameShape(QFrame.HLine); lay.addWidget(div)
-        lay.addWidget(QLabel('GRBL Settings').setStyleSheet('') or
-                      self._lbl('GRBL Settings', '#aaa'))
+        lay.addWidget(self._lbl('GRBL Settings', '#aaa'))
 
         # Scrollable $-settings
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
-        inner = QWidget(); form = QFormLayout(inner)
-        form.setSpacing(8); form.setLabelAlignment(Qt.AlignRight)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        form = QFormLayout(inner)
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignRight)
 
         SETTINGS = [
             ('$32', 'Laser mode (1=knife)', '1'),
@@ -162,8 +249,10 @@ class SettingsPage(QWidget):
             rl.addWidget(le); rl.addWidget(btn); rl.addStretch()
             form.addRow('%s %s' % (key, desc), rw)
             self._fields[key] = le
-        scroll.setWidget(inner); lay.addWidget(scroll, 1)
+        scroll.setWidget(inner)
+        lay.addWidget(scroll, 1)
 
+        # Buttons for $$, $X, $RST=$
         ar = QHBoxLayout()
         b1 = QPushButton('$$'); b1.setMinimumHeight(46); b1.clicked.connect(lambda: self._grbl.send('$$'))
         b2 = QPushButton('$X'); b2.setMinimumHeight(46); b2.clicked.connect(lambda: self._grbl.send('$X'))
@@ -175,6 +264,63 @@ class SettingsPage(QWidget):
         self._refresh_ports()
         return w
 
+    # ── Terminal tab ─────────────────────────────────────────────────────────
+    def _build_terminal(self):
+        w = QWidget()
+        w.setObjectName("TerminalTab")
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(10)
+
+        # Terminal display
+        self._terminal = QPlainTextEdit()
+        self._terminal.setReadOnly(True)
+        self._terminal.setMinimumHeight(200)
+        self._terminal.setStyleSheet('background:#121212; color:#eee;')
+        lay.addWidget(self._terminal, 1)
+
+        # Input row
+        tr = QHBoxLayout()
+        self._term_input = _TerminalLineEdit(on_focus=self._show_keyboard)
+        self._term_input.setMinimumHeight(44)
+        self._term_input.setPlaceholderText('Type GRBL command and press Send')
+        self._term_input.returnPressed.connect(self._send_terminal)
+        btn_send = QPushButton('Send')
+        btn_send.setMinimumHeight(44); btn_send.setProperty('role','accent')
+        btn_send.clicked.connect(self._send_terminal)
+        btn_clear = QPushButton('Clear')
+        btn_clear.setMinimumHeight(44); btn_clear.clicked.connect(self._terminal.clear)
+        tr.addWidget(self._term_input, 1)
+        tr.addWidget(btn_send); tr.addWidget(btn_clear)
+        lay.addLayout(tr)
+
+        # Keyboard (initially hidden)
+        self._keyboard = _OnScreenKeyboard(self._term_input, on_enter=self._send_terminal)
+        self._keyboard.setVisible(False)
+        lay.addWidget(self._keyboard)
+
+        # Install event filter to hide keyboard on outside click
+        w.installEventFilter(self)
+        # Connect raw_received to terminal
+        self._grbl.raw_received.connect(self._on_raw_received)
+        return w
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress:
+            # For Terminal tab: hide keyboard when clicking outside input or keyboard
+            if obj.objectName() == "TerminalTab" and hasattr(self, '_keyboard') and self._keyboard.isVisible():
+                kbd_rect = self._keyboard.geometry()
+                input_rect = self._term_input.geometry()
+                # Convert global coordinates to local of the terminal tab
+                pos = self._keyboard.mapFromGlobal(event.globalPos())
+                if not kbd_rect.contains(pos) and not input_rect.contains(self._term_input.mapFromGlobal(event.globalPos())):
+                    self._keyboard.setVisible(False)
+                    # Force layout update
+                    if self.parentWidget():
+                        self.parentWidget().layout().activate()
+        return super().eventFilter(obj, event)
+
+    # ── Helpers (shared) ─────────────────────────────────────────────────────
     def _lbl(self, text, color='#aaa'):
         l = QLabel(text); l.setStyleSheet('color:%s; font-size:13px; font-weight:bold;' % color)
         return l
@@ -185,6 +331,40 @@ class SettingsPage(QWidget):
             lbl = '%s  (%s)' % (name, desc) if desc else name
             self._port.addItem(lbl, name)
         if not self._port.count(): self._port.addItem('No ports found', '')
+
+    def _send_terminal(self):
+        text = self._term_input.text().strip()
+        if not text:
+            return
+        self._term_input.clear()
+        self._append_terminal('> %s' % text)
+        self._grbl.send(text)
+        self._hide_keyboard()
+
+    @pyqtSlot(str)
+    def _on_raw_received(self, line):
+        if line.startswith('<'):
+            return
+        self._append_terminal(line)
+
+    def _append_terminal(self, text):
+        if hasattr(self, '_terminal'):
+            self._terminal.appendPlainText(text)
+            self._terminal.verticalScrollBar().setValue(
+                self._terminal.verticalScrollBar().maximum())
+
+    def _show_keyboard(self):
+        if hasattr(self, '_keyboard') and not self._keyboard.isVisible():
+            self._keyboard.setVisible(True)
+            self._keyboard.raise_()
+            if self.parentWidget():
+                self.parentWidget().layout().activate()
+
+    def _hide_keyboard(self):
+        if hasattr(self, '_keyboard') and self._keyboard.isVisible():
+            self._keyboard.setVisible(False)
+            if self.parentWidget():
+                self.parentWidget().layout().activate()
 
     def _toggle_conn(self):
         if self._grbl.is_connected(): self._grbl.disconnect()
@@ -208,7 +388,7 @@ class SettingsPage(QWidget):
     def _restyle(self, w):
         w.style().unpolish(w); w.style().polish(w)
 
-    # ── WiFi tab ──────────────────────────────────────────────────────────────
+    # ── WiFi tab (unchanged) ─────────────────────────────────────────────────
     def _build_wifi(self):
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -347,7 +527,7 @@ class SettingsPage(QWidget):
         except Exception: pass
         self._refresh_wifi_cur()
 
-    # ── System tab ────────────────────────────────────────────────────────────
+    # ── System tab (unchanged) ────────────────────────────────────────────────
     def _build_system(self):
         w = QWidget()
         lay = QVBoxLayout(w)
