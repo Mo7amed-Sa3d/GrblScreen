@@ -71,6 +71,7 @@ class UsbPage(QWidget):
         self._current_repeat = 0
         self._total_repeats  = 1
         self._stopped = False
+        self._idle_consecutive = 0
         self._idle_timer = QTimer(self)
         self._idle_timer.setInterval(500)
         self._idle_timer.timeout.connect(self._check_idle_for_next_repeat)
@@ -298,14 +299,12 @@ class UsbPage(QWidget):
     def _start_send(self):
         if self._stopped:
             return
-        n = self._current_repeat + 1
-        t = self._total_repeats
-        self._prog_lbl.setText(
-            'Run %d / %d — sending…' % (n, t) if t > 1 else 'Sending…')
 
-        # Disconnect previous thread's signals to prevent double-firing
-        # when a new thread is created for each repeat.
-        if self._send_thread is not None:
+        # Properly stop and wait for previous thread
+        if self._send_thread is not None and self._send_thread.isRunning():
+            self._send_thread.stop()
+            self._send_thread.wait(2000)   # wait up to 2 seconds
+            # Disconnect signals to be safe
             try:
                 self._send_thread.send_line.disconnect()
                 self._send_thread.progress.disconnect()
@@ -314,13 +313,17 @@ class UsbPage(QWidget):
             except Exception:
                 pass
 
+        n = self._current_repeat + 1
+        t = self._total_repeats
+        self._prog_lbl.setText(
+            f'Run {n} / {t} — sending…' if t > 1 else 'Sending…')
+
         self._send_thread = _FileLoaderThread(self._selected_path)
         self._send_thread.send_line.connect(self._grbl.send)
         self._send_thread.progress.connect(self._on_progress)
         self._send_thread.done.connect(self._on_file_streamed)
         self._send_thread.error.connect(self._on_error)
         self._send_thread.start()
-
     # ── Progress / completion ─────────────────────────────────────────────────
 
     @pyqtSlot(int, int)
@@ -357,40 +360,41 @@ class UsbPage(QWidget):
         self._idle_timer.start()
 
     def _check_idle_for_next_repeat(self):
-        """
-        Poll for true job completion. Two conditions must both be true:
-          1. All commands acknowledged: _cmd_q empty AND _in_flight == 0.
-             Without this, the timer triggers while hundreds of commands
-             are still sitting in Qt's queue waiting to be sent to serial.
-             GRBL looks Idle between small commands, giving a false 'done'.
-          2. GRBL state is Idle: machine has stopped moving.
-        """
+        """Robust job completion detection: require stable Idle state."""
         if self._stopped:
             self._idle_timer.stop()
             return
 
-        # Condition 1: every line has been written to serial AND
-        # every written command has received its 'ok' response.
+        # Condition 1: all commands sent and acknowledged
         if not self._grbl.all_commands_acknowledged():
-            return   # still pushing lines or waiting for 'ok' responses
+            self._idle_consecutive = 0   # reset counter
+            return
 
-        # Condition 2: machine has finished executing the last motion.
+        # Condition 2: machine must be Idle
         if self._grbl.state != 'Idle':
-            return   # still moving
+            self._idle_consecutive = 0
+            return
 
+        # Increment consecutive idle count (called every 500ms)
+        self._idle_consecutive = getattr(self, '_idle_consecutive', 0) + 1
+
+        # Need 2 consecutive idle polls (1 second) to confirm
+        if self._idle_consecutive < 2:
+            return
+
+        # --- Job is truly complete ---
         self._idle_timer.stop()
         self._current_repeat += 1
 
         if self._current_repeat >= self._total_repeats:
-            # All repeats done
             t = self._total_repeats
-            self._prog_lbl.setText(
-                'All %d run%s complete ✓' % (t, 's' if t > 1 else ''))
+            self._prog_lbl.setText(f'All {t} run{"s" if t > 1 else ""} complete ✓')
             self._btn_run.setEnabled(True)
             self._btn_stop.setEnabled(False)
             self._current_repeat = 0
+            self._idle_consecutive = 0
         else:
-            # More repeats — go back through alignment + send
+            # Start next repeat
             self._begin_repeat()
 
     # ── Stop ─────────────────────────────────────────────────────────────────
