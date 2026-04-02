@@ -75,7 +75,7 @@ class UsbPage(QWidget):
         self._stable_count = 0      # consecutive polls with no movement
         self._last_pos = None       # last recorded machine position (x, y)
         self._idle_timer = QTimer(self)
-        self._idle_timer.setInterval(5000)  # 500 ms between idle checks
+        self._idle_timer.setInterval(500)  # 500 ms between idle checks
         self._idle_timer.timeout.connect(self._check_idle_for_next_repeat)
         self._build()
 
