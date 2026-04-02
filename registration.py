@@ -24,16 +24,21 @@ import math
 import logging
 
 # ── Calibration constants — edit for your machine ────────────────────────────
-CAM_OFFSET_X_MM = 20.0    # mm camera is RIGHT of knife
-CAM_OFFSET_Y_MM =  0.0    # mm camera is ABOVE knife
-MM_PER_PIXEL    =  0.094  # mm/pixel at paper surface (calibrate!)
+CAM_OFFSET_X_MM = 0.0     # mm camera is RIGHT of knife (calibrate: measure then set)
+CAM_OFFSET_Y_MM = 0.0     # mm camera is ABOVE knife (calibrate: measure then set)
+MM_PER_PIXEL    =  0.0099 # mm/pixel — calculated from 5mm dot diameter
+                           # at 1920×1920: 5mm dot ≈ 504px diameter → 5/504
+                           # Calibrate: measure actual vs expected position
+                           # and adjust until marks align perfectly
 
-# ── Blob detection ────────────────────────────────────────────────────────────
-BLOB_DARK_MAX  = 60     # grayscale threshold for "dark dot"
-BLOB_MIN_AREA  = 150    # pixels²
-BLOB_MAX_AREA  = 8000   # pixels²
-BLOB_MIN_ROUND = 0.45   # 0–1 circularity
-MAX_PX_OFFSET  = 130    # reject if dot centre is >130px from image centre
+# ── Blob detection — from confirmed working regdetect.py ─────────────────────
+# Camera captures at 1920×1920 XRGB; dots are large printed circles.
+BLOB_DARK_MAX  = 100    # grayscale threshold (matches regdetect.py)
+BLOB_MIN_AREA  = 100000 # pixels² minimum   (matches regdetect.py)
+BLOB_MAX_AREA  = 400000 # pixels² maximum   (matches regdetect.py)
+BLOB_MIN_ROUND = 0.7    # circularity 0-1   (matches regdetect.py)
+BLUR_KERNEL    = (5, 5) # GaussianBlur before threshold
+MAX_PX_OFFSET  = 800    # pixels - allow larger offset for 1920px frame
 
 # ── RegMarks parser ───────────────────────────────────────────────────────────
 _RM_RE = re.compile(
@@ -151,194 +156,197 @@ def compute_affine_correction(design_pts, actual_pts):
     return corr, warn
 
 
-# ── Camera capture ────────────────────────────────────────────────────────────
+# ── Camera capture — matching regdetect.py format ────────────────────────────
 
-def capture_frame_gray():
-    """Capture one frame. Returns (gray_ndarray, error_str)."""
+def capture_frame():
+    """
+    Capture one frame using picamera2 with XRGB8888 format at 1920x1920.
+    Returns (bgr_frame, gray_frame, error_str).
+    Matches the format used in the working regdetect.py script.
+    """
     try:
         from picamera2 import Picamera2
-        import numpy as np, cv2, time
-        cam = Picamera2()
-        cam.configure(cam.create_still_configuration(
-            main={'size': (640, 480), 'format': 'RGB888'}))
-        cam.start(); time.sleep(0.3)
-        frame = cam.capture_array()
-        cam.stop(); cam.close()
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY), None
+        import cv2
+        import time
+
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(
+            main={"format": "XRGB8888", "size": (1920, 1920)}
+        )
+        picam2.configure(config)
+        picam2.start()
+        time.sleep(0.5)   # allow AE/AWB to settle
+
+        frame = picam2.capture_array()
+        picam2.stop()
+        picam2.close()
+
+        # Same conversion as regdetect.py: BGRA -> BGR -> GRAY
+        bgr  = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        return bgr, gray, None
+
     except ImportError:
-        return _capture_subprocess()
+        return None, None, 'picamera2 not installed: sudo apt install python3-picamera2'
     except Exception as e:
-        return None, str(e)
+        return None, None, 'Camera error: %s' % str(e)
 
 
-def _capture_subprocess():
-    import subprocess, tempfile, os
+# Keep for backward compatibility
+def capture_frame_gray():
+    """Returns (gray_ndarray, error_str) — backward compat wrapper."""
+    _, gray, err = capture_frame()
+    return gray, err
+
+
+# ── Dot detection — matching regdetect.py algorithm ──────────────────────────
+
+def find_dot_in_frame(gray, bgr=None):
+    """
+    Find a dark circular registration mark using the same algorithm as regdetect.py.
+
+    Parameters match the working detection script:
+      - GaussianBlur before threshold
+      - BLOB_DARK_MAX = 100
+      - area range 100000-400000 pixels²
+      - circularity >= 0.7
+
+    Returns (dx_px, dy_px, annotated_bgr, error_str).
+      dx_px positive = dot is RIGHT of image centre
+      dy_px positive = dot is BELOW image centre
+    """
     try:
         import cv2
+        import numpy as np
     except ImportError:
-        return None, 'python3-opencv not installed'
-    tmp = tempfile.mktemp(suffix='.jpg')
-    for binary in ('/usr/bin/rpicam-still', '/usr/bin/libcamera-still',
-                   '/usr/local/bin/rpicam-still', '/usr/local/bin/libcamera-still'):
-        if not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
-            continue
-        try:
-            subprocess.run([binary, '-o', tmp, '--width', '640', '--height', '480',
-                            '--nopreview', '--timeout', '500', '-q', '85'],
-                           timeout=8, capture_output=True, check=True)
-            img = cv2.imread(tmp, cv2.IMREAD_GRAYSCALE)
-            os.remove(tmp)
-            if img is not None:
-                return img, None
-            return None, 'Empty image from camera'
-        except Exception as e:
-            try: os.remove(tmp)
-            except: pass
-            return None, str(e)
-    return None, 'No camera binary found (rpicam-still / libcamera-still)'
-
-
-# ── Dot detection ─────────────────────────────────────────────────────────────
-
-def find_dot_in_frame(gray, threshold=None):
-    """
-    Find darkest circular blob in frame with intelligent threshold selection.
-    Returns (dx_px, dy_px, annotated_bgr, error_str).
-      +dx = dot is RIGHT of centre, +dy = dot is BELOW centre.
-    If dot not found with initial threshold, tries multiple thresholds automatically.
-    """
-    try:
-        import cv2, numpy as np
-    except ImportError:
-        return 0, 0, gray, 'OpenCV/numpy not installed'
+        return 0, 0, None, 'OpenCV/numpy not installed: sudo apt install python3-opencv python3-numpy'
 
     h, w = gray.shape
     cx, cy = w // 2, h // 2
 
-    # If no threshold specified, use default
-    if threshold is None:
-        threshold = BLOB_DARK_MAX
+    # Step 1: Blur (same as regdetect.py)
+    blurred = cv2.GaussianBlur(gray, BLUR_KERNEL, 0)
 
-    # List of thresholds to try (primary first)
-    thresholds_to_try = [threshold]
-    # Add adaptive thresholds based on image histogram
-    if threshold == BLOB_DARK_MAX:
-        # Try slightly lighter and darker thresholds
-        thresholds_to_try.extend([threshold - 20, threshold + 20, threshold - 40, threshold + 40])
+    # Step 2: Threshold (same as regdetect.py)
+    _, thresh = cv2.threshold(blurred, BLOB_DARK_MAX, 255, cv2.THRESH_BINARY_INV)
 
-    ann = None
-    best_match = None
-    used_threshold = threshold
+    # Step 3: Find contours (same as regdetect.py)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Try each threshold until we find a valid dot
-    for try_threshold in thresholds_to_try:
-        if try_threshold < 1 or try_threshold > 255:
+    # Step 4: Filter by area and circularity (same as regdetect.py)
+    best_cnt  = None
+    best_dist = float('inf')
+    best_cx   = best_cy = 0
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < BLOB_MIN_AREA or area > BLOB_MAX_AREA:
             continue
 
-        _, thresh = cv2.threshold(gray, try_threshold, 255, cv2.THRESH_BINARY_INV)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0:
+            continue
+        circularity = 4 * math.pi * area / (perimeter * perimeter)
+        if circularity < BLOB_MIN_ROUND:
+            continue
 
-        candidates = []
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if not (BLOB_MIN_AREA <= area <= BLOB_MAX_AREA):
-                continue
-            peri = cv2.arcLength(cnt, True)
-            if peri == 0:
-                continue
-            circularity = 4 * math.pi * area / (peri**2)
-            if circularity < BLOB_MIN_ROUND:
-                continue
-            M = cv2.moments(cnt)
-            if M['m00'] == 0:
-                continue
-            bx = int(M['m10'] / M['m00'])
-            by = int(M['m01'] / M['m00'])
-            candidates.append((math.hypot(bx-cx, by-cy), bx, by, cnt))
+        M = cv2.moments(contour)
+        if M["m00"] == 0:
+            continue
+        bx = int(M["m10"] / M["m00"])
+        by = int(M["m01"] / M["m00"])
 
-        if candidates:
-            _, bx, by, cnt = min(candidates, key=lambda c: c[0])
-            dx, dy = bx - cx, by - cy
+        dist = math.hypot(bx - cx, by - cy)
+        if dist < best_dist:
+            best_dist = dist
+            best_cnt  = contour
+            best_cx   = bx
+            best_cy   = by
 
-            if abs(dx) <= MAX_PX_OFFSET and abs(dy) <= MAX_PX_OFFSET:
-                # Found valid dot!
-                ann = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                
-                # Draw threshold visualization
-                cv2.rectangle(ann, (5, 5), (w-5, h-5), (50, 50, 200), 2)
-                cv2.putText(ann, 'T:%d' % try_threshold, (10, 25),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                
-                # Draw dot detection contours
-                cv2.drawContours(ann, [cnt], -1, (0, 165, 255), 2)
-                
-                # Draw circles (scaled to fit in frame)
-                # Limit circle radius to not exceed frame boundaries
-                max_radius = min(bx, by, w - bx, h - by) - 2
-                radius_outer = min(8, max_radius)
-                radius_inner = min(4, max_radius)
-                if radius_inner > 0:
-                    cv2.circle(ann, (bx, by), radius_inner, (0, 165, 255), -1)
-                if radius_outer > 0:
-                    cv2.circle(ann, (bx, by), radius_outer, (0, 165, 255), 1)
-                
-                # Draw crosshairs at center
-                cv2.line(ann, (cx, 0), (cx, h), (80, 80, 80), 1)
-                cv2.line(ann, (0, cy), (w, cy), (80, 80, 80), 1)
-                
-                # Draw offset vector (arrow from center to dot)
-                if abs(bx - cx) > 2 or abs(by - cy) > 2:  # Only draw if offset is visible
-                    cv2.arrowedLine(ann, (cx, cy), (bx, by), (0, 255, 0), 2)
-                
-                used_threshold = try_threshold
-                best_match = (dx, dy, ann)
-                break
+    if best_cnt is None:
+        # Annotate with failure info
+        output = bgr.copy() if bgr is not None else cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        cv2.putText(output, 'No dot found (T=%d, A=%d-%d, C>=%.1f)' % (
+                    BLOB_DARK_MAX, BLOB_MIN_AREA, BLOB_MAX_AREA, BLOB_MIN_ROUND),
+                    (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        return 0, 0, output, (
+            'No dot found. Check: threshold=%d, area=%d-%d, circularity>=%.1f'
+            % (BLOB_DARK_MAX, BLOB_MIN_AREA, BLOB_MAX_AREA, BLOB_MIN_ROUND)
+        )
 
-    if best_match:
-        dx, dy, ann = best_match
-        msg = 'Threshold: %d' % used_threshold if used_threshold != threshold else None
-        return dx, dy, ann, msg
+    dx = best_cx - cx
+    dy = best_cy - cy
 
-    # No dot found with any threshold
-    ann = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    cv2.rectangle(ann, (5, 5), (w-5, h-5), (50, 50, 200), 2)
-    cv2.putText(ann, 'T:%d-Failed' % threshold, (10, 25),
-               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-    
-    error_detail = (
-        'No dot found. Tried thresholds %d-%d.\n'
-        'Adjust BLOB_DARK_MAX or check:\n'
-        '  - Lighting (too bright/dark?)\n'
-        '  - Dot size (must be %d-%d pixels²)\n'
-        '  - Dot shape (must be %.1f+ circular)'
-        % (min(thresholds_to_try), max(thresholds_to_try),
-           BLOB_MIN_AREA, BLOB_MAX_AREA, BLOB_MIN_ROUND)
-    )
-    
-    return 0, 0, ann, error_detail
+    if abs(dx) > MAX_PX_OFFSET or abs(dy) > MAX_PX_OFFSET:
+        return dx, dy, bgr, (
+            'Dot found at (%+d, %+d) px from centre — '
+            'too far. Move head closer.' % (dx, dy)
+        )
+
+    # Annotate output — same style as regdetect.py
+    output = bgr.copy() if bgr is not None else cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    area   = cv2.contourArea(best_cnt)
+    radius = int(math.sqrt(area / math.pi))
+
+    cv2.drawContours(output, [best_cnt], -1, (0, 255, 0), 3)
+
+    # Filled overlay (same as regdetect.py)
+    overlay = output.copy()
+    cv2.circle(overlay, (best_cx, best_cy), radius, (255, 255, 0), -1)
+    cv2.addWeighted(overlay, 0.3, output, 0.7, 0, output)
+
+    # Crosshair at centre (same as regdetect.py)
+    cv2.line(output, (best_cx - 30, best_cy), (best_cx + 30, best_cy), (0, 0, 255), 2)
+    cv2.line(output, (best_cx, best_cy - 30), (best_cx, best_cy + 30), (0, 0, 255), 2)
+
+    # Image centre crosshair
+    cv2.line(output, (cx, 0), (cx, h), (80, 80, 80), 1)
+    cv2.line(output, (0, cy), (w, cy), (80, 80, 80), 1)
+
+    # Offset arrow
+    cv2.arrowedLine(output, (cx, cy), (best_cx, best_cy), (0, 255, 0), 2)
+
+    # Info text
+    peri = cv2.arcLength(best_cnt, True)
+    circ = 4 * math.pi * area / (peri * peri) if peri > 0 else 0
+    cv2.putText(output, 'A:%.0f C:%.2f' % (area, circ),
+                (best_cx + 10, best_cy - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    cv2.putText(output, '(%d,%d) off:(%+d,%+d)' % (best_cx, best_cy, dx, dy),
+                (best_cx + 10, best_cy + 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+    return dx, dy, output, None
+
 
 
 # ── Public: scan one dot ──────────────────────────────────────────────────────
 
 def scan_dot(machine_x, machine_y):
     """
-    Capture frame and find dot. machine_x/y = current KNIFE position.
-    Returns DotScanResult with dot's actual world position.
-    Also includes annotated frame with scanning marks for display.
+    Capture frame using working regdetect.py format and find dot.
+    machine_x/y = current KNIFE position (mm).
+    Returns DotScanResult with dot actual world position and annotated frame.
     """
-    gray, err = capture_frame_gray()
+    bgr, gray, err = capture_frame()
     if gray is None:
         return DotScanResult(False, message=err or 'Capture failed')
-    dx_px, dy_px, annotated_frame, err = find_dot_in_frame(gray)
-    if err:
-        return DotScanResult(False, message=err, frame=annotated_frame)
 
-    # Camera is CAM_OFFSET from knife. Dot world position:
-    # camera centre is at (machine_x + CAM_OFFSET_X, machine_y + CAM_OFFSET_Y)
-    # dot is at camera centre + pixel offset converted to mm
+    dx_px, dy_px, annotated_frame, err = find_dot_in_frame(gray, bgr=bgr)
+    if err and annotated_frame is not None:
+        # Detection failed but we have an annotated frame showing why
+        return DotScanResult(False, message=err, frame=annotated_frame)
+    if err:
+        return DotScanResult(False, message=err)
+
+    # Camera is CAM_OFFSET from knife tip.
+    # dot world pos = camera_centre + pixel_offset_in_mm
     # image +Y is downward; machine +Y is upward → negate dy
     world_x = machine_x + CAM_OFFSET_X_MM + dx_px * MM_PER_PIXEL
     world_y = machine_y + CAM_OFFSET_Y_MM - dy_px * MM_PER_PIXEL
+
+    logging.info('scan_dot: machine(%.2f,%.2f) px(%+d,%+d) world(%.3f,%.3f)',
+                 machine_x, machine_y, dx_px, dy_px, world_x, world_y)
 
     return DotScanResult(True, world_x=world_x, world_y=world_y,
                          dx_px=dx_px, dy_px=dy_px, frame=annotated_frame)

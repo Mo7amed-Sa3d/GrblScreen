@@ -38,7 +38,7 @@ class _ScanThread(QThread):
     # Avoids pyqtSignal(object) which is unreliable on some PyQt5 builds.
     scan_ok   = pyqtSignal(float, float, float, float)   # world_x, world_y, dx_px, dy_px
     scan_fail = pyqtSignal(str)                          # error message
-    frame_captured = pyqtSignal(object)                  # opencv BGR frame (numpy array)
+    frame_captured = pyqtSignal(bytes, int, int)         # jpeg_bytes, width, height
 
     def __init__(self, mx, my):
         super().__init__()
@@ -46,9 +46,18 @@ class _ScanThread(QThread):
 
     def run(self):
         result = reg.scan_dot(self._mx, self._my)
-        # Emit the annotated frame if available
+        # Encode frame as JPEG bytes — safe across thread boundary
+        # (pyqtSignal(object) crashes on some Pi OS PyQt5 builds)
         if hasattr(result, '_frame') and result._frame is not None:
-            self.frame_captured.emit(result._frame)
+            try:
+                import cv2
+                ok, buf = cv2.imencode('.jpg', result._frame,
+                                       [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ok:
+                    h, w = result._frame.shape[:2]
+                    self.frame_captured.emit(bytes(buf), w, h)
+            except Exception:
+                pass
         if result.success:
             self.scan_ok.emit(result.world_x, result.world_y,
                               result.dx_px, result.dy_px)
@@ -77,10 +86,15 @@ class RegistrationPage(QWidget):
         self._results     = [None]*4   # DotScanResult per mark
         self._scan_thread = None
 
-        # Poll timer — detects when GRBL returns to Idle after a move
-        self._move_timer  = QTimer(self)
-        self._move_timer.setInterval(150)
+        # Movement detection — two-phase:
+        # Phase 1: wait for GRBL state → Run/Jog (machine started moving)
+        # Phase 2: wait for GRBL state → Idle   (machine finished moving)
+        # _seen_running guards against firing on the Idle state that exists
+        # BEFORE the G0 command is received and executed.
+        self._move_timer   = QTimer(self)
+        self._move_timer.setInterval(200)
         self._move_timer.timeout.connect(self._on_move_poll)
+        self._seen_running = False
 
         self._build()
         # Wire state changes for move completion detection
@@ -233,43 +247,174 @@ class RegistrationPage(QWidget):
         self._move_to(self._current)
 
     # ── Auto-scan state machine ───────────────────────────────────────────────
+    #
+    # Movement strategy (simple + robust):
+    #   1. Send G90 + G0 to target position (DESIGN position — no cam offset)
+    #   2. Connect error_received to catch GRBL rejections immediately
+    #   3. Start a 200ms poll timer
+    #   4. Poll: if Idle AND position changed → move done → scan
+    #      OR if Idle AND _ok_count>=2 AND 2s elapsed → scan (fast move)
+    #   5. Hard timeout at 15 seconds → scan regardless
+    #
+    # Why no cam offset on movement:
+    #   CAM_OFFSET_X_MM=20 means target_x = design_x - 20.
+    #   If design_x < 20, target is negative → GRBL rejects with error:9.
+    #   Instead, move knife to the design position. The camera captures
+    #   the dot with some pixel offset, which scan_dot() uses to calculate
+    #   the exact world position. This works regardless of cam offset value.
 
     def _move_to(self, idx):
-        """Move camera over mark idx."""
+        """Move to mark idx design position and wait for completion."""
         self._state   = MOVING
         self._current = idx
         self._update_badge('MOVING TO %d' % (idx+1), '#2196f3')
-        self._show_msg('Moving to mark %d…' % (idx+1), '#aaa')
         self._mark_row_highlight(idx, 'moving')
 
         dx, dy = self._design[idx]
-        # Position the knife at (design - cam_offset) so the camera sees the dot
-        target_x = dx - reg.CAM_OFFSET_X_MM
-        target_y = dy - reg.CAM_OFFSET_Y_MM
 
-        # Send the move — bypasses correction (we're aligning, not cutting)
+        # Move knife to the design position directly.
+        # Do NOT subtract cam offset here — negative targets cause GRBL errors.
+        # The pixel offset in the captured frame handles the measurement.
+        target_x = max(0.0, dx)   # clamp to non-negative just in case
+        target_y = max(0.0, dy)
+
+        self._move_start_pos = self._corrector.mpos[:2]  # (x, y) before move
+        self._show_msg(
+            'Moving to mark %d  (%.1f, %.1f)…' % (idx+1, target_x, target_y),
+            '#aaa')
+
+        # Connect error signal to catch GRBL rejections
+        try:
+            self._corrector.error_received.disconnect(self._on_move_error)
+        except Exception:
+            pass
+        self._corrector.error_received.connect(self._on_move_error)
+
+        # Send the move bypassing tilt correction (we're aligning, not cutting)
         self._corrector._grbl.send('G90')
         self._corrector._grbl.send('G0 X%.4f Y%.4f' % (target_x, target_y))
 
-        # Start polling for Idle
+        # Init counters
+        self._poll_count   = 0
+        self._ok_count     = 0
+        self._move_started = False  # True once we see Run/Jog OR position changes
+
+        # Connect ok_received to count G90+G0 acks
+        try:
+            self._corrector.ok_received.disconnect(self._on_move_ok)
+        except Exception:
+            pass
+        self._corrector.ok_received.connect(self._on_move_ok)
+
+        self._move_timer.stop()
         self._move_timer.start()
 
+    def _on_move_ok(self):
+        """Count ok responses for the G90 + G0 commands."""
+        if self._state == MOVING:
+            self._ok_count += 1
+
+    def _on_move_error(self, code):
+        """Called if GRBL rejects the move command."""
+        if self._state != MOVING:
+            return
+        # Show the error but still proceed to scan at current position
+        # Common errors: 9=not homed, 1=soft limits
+        msg = {
+            '9': 'Machine not homed. Run $H first.',
+            '1': 'G-code unsupported',
+            '2': 'Bad number format',
+        }.get(str(code), 'GRBL error:%s' % code)
+        self._show_msg(
+            'Move error: %s  Scanning at current position.' % msg,
+            '#f44336')
+        # Give a brief moment for the error to be processed then scan
+        QTimer.singleShot(500, self._finish_move)
+
+    def _finish_move(self):
+        """Clean up move state and proceed to scan."""
+        if self._state != MOVING:
+            return
+        self._move_timer.stop()
+        try:
+            self._corrector.ok_received.disconnect(self._on_move_ok)
+        except Exception:
+            pass
+        try:
+            self._corrector.error_received.disconnect(self._on_move_error)
+        except Exception:
+            pass
+        self._show_msg(
+            'At mark %d. Scanning…' % (self._current + 1), '#4caf50')
+        QTimer.singleShot(300, self._do_scan)
+
     def _on_move_poll(self):
-        """Called every 150ms while waiting for move to complete."""
+        """Poll every 200ms while waiting for move to complete."""
         if self._state != MOVING:
             self._move_timer.stop()
             return
-        # GRBL reports Idle when the move is complete
-        if self._corrector.state in ('Idle', 'idle'):
-            self._move_timer.stop()
-            self._do_scan()
+
+        self._poll_count += 1
+        state     = self._corrector.state
+        pos       = self._corrector.mpos[:2]
+        state_low = str(state).lower().strip()
+
+        # Show live status every 5 polls (1 second)
+        if self._poll_count % 5 == 0:
+            dx_now, dy_now = self._design[self._current]
+            self._show_msg(
+                'Moving to mark %d…  state=%s  pos=(%.2f, %.2f)  ok=%d' % (
+                    self._current+1, state, pos[0], pos[1], self._ok_count),
+                '#ffb74d')
+
+        # Detect that the machine has started moving (position changed)
+        sx, sy = self._move_start_pos
+        if abs(pos[0] - sx) > 0.5 or abs(pos[1] - sy) > 0.5:
+            self._move_started = True
+
+        # Also detect Run/Jog state
+        if state_low in ('run', 'jog'):
+            self._move_started = True
+
+        # Normal completion: machine started AND is now Idle
+        if self._move_started and state_low == 'idle':
+            self._show_msg(
+                'Mark %d reached (%.2f, %.2f)' % (
+                    self._current+1, pos[0], pos[1]),
+                '#4caf50')
+            self._finish_move()
+            return
+
+        # Fallback: G90+G0 both acknowledged AND Idle for 2+ seconds without movement
+        # This handles: fast moves, same-position moves, and some rejected moves
+        if self._ok_count >= 2 and not self._move_started and state_low == 'idle':
+            if self._poll_count >= 10:   # 10 × 200ms = 2 seconds after both oks
+                self._show_msg(
+                    'Mark %d: no movement detected — scanning at (%.2f, %.2f)' % (
+                        self._current+1, pos[0], pos[1]),
+                    '#ff9800')
+                self._finish_move()
+                return
+
+        # Hard timeout: 15 seconds
+        if self._poll_count >= 75:
+            self._show_msg('Timeout at mark %d — scanning now' % (self._current+1), '#ff9800')
+            self._finish_move()
+            return
+
+        # Handle HOLD — send cycle start
+        if state_low == 'hold':
+            self._corrector.cycle_start()
 
     @pyqtSlot(str)
     def _on_grbl_state(self, state):
-        """Backup detection for Idle after move (in case poll misses it)."""
-        if self._state == MOVING and state == 'Idle':
-            self._move_timer.stop()
-            self._do_scan()
+        """Signal-based backup: detect Idle after movement."""
+        if self._state != MOVING:
+            return
+        if state in ('Run', 'Jog'):
+            self._move_started = True
+        elif state == 'Idle' and self._move_started:
+            self._finish_move()
 
     def _do_scan(self):
         """Trigger camera scan for current mark."""
@@ -285,35 +430,20 @@ class RegistrationPage(QWidget):
         self._scan_thread.frame_captured.connect(self._on_frame_captured)
         self._scan_thread.start()
 
-    @pyqtSlot(object)
-    def _on_frame_captured(self, bgr_frame):
-        """Display captured frame with opencv markings."""
+    @pyqtSlot(bytes, int, int)
+    def _on_frame_captured(self, jpeg_bytes, w, h):
+        """Display captured frame decoded from JPEG bytes."""
         try:
-            import cv2
-            import numpy as np
-            # Convert BGR frame to RGB for Qt display
-            if bgr_frame is not None:
-                h, w = bgr_frame.shape[:2]
-                # Convert BGR to RGB
-                rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-                # Ensure contiguous memory layout
-                rgb = np.ascontiguousarray(rgb)
-                # Convert to QImage
-                bytes_per_line = 3 * w
-                q_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                # Scale to fit label
-                label_w = self._camera_label.width()
-                label_h = self._camera_label.height()
-                if label_w > 0 and label_h > 0:
-                    pix = QPixmap.fromImage(q_img).scaled(
-                        label_w - 10, label_h - 10, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    self._camera_label.setPixmap(pix)
-                else:
-                    # If label size not yet known, just show the raw image
-                    pix = QPixmap.fromImage(q_img)
-                    self._camera_label.setPixmap(pix)
+            q_img = QImage.fromData(jpeg_bytes, 'JPEG')
+            if not q_img.isNull():
+                lw = self._camera_label.width()  or w
+                lh = self._camera_label.height() or h
+                pix = QPixmap.fromImage(q_img).scaled(
+                    lw - 10, lh - 10,
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self._camera_label.setPixmap(pix)
         except Exception as e:
-            self._camera_label.setText('Frame display error: %s' % str(e))
+            self._camera_label.setText('Frame error: %s' % str(e))
 
     @pyqtSlot(float, float, float, float)
     def _on_scan_ok(self, world_x, world_y, dx_px, dy_px):

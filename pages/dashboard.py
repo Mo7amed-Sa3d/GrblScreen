@@ -3,6 +3,8 @@
 #   Top half  — position strip + jog compass (X/Y arrows + home centre)
 #   Bottom half — 8 action buttons in 4×2 grid
 
+import re
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QFrame, QSizePolicy, QButtonGroup
@@ -174,10 +176,10 @@ class DashboardPage(QWidget):
         self._b_registration = self._abtn('◎\nAlignment',      'actionBtn')
         self._b_knife_up     = self._abtn('▲\nKnife Up',       'actionBtnKnifeUp')
         self._b_knife_down   = self._abtn('▼\nKnife Down',     'actionBtnKnifeDown')
-        self._b_testcut2     = self._abtn('□\nTest 10×10',     'actionBtn')
+        self._b_testcut2     = self._abtn('✂\nTest 10×10',     'actionBtn')
 
         # Row 2 — job control
-        self._b_pause        = self._abtn('⏸\nPause',          'actionBtnPause')
+        self._b_pause        = self._abtn('',          'actionBtnPause')
         self._b_cancel       = self._abtn('✕\nCancel',         'actionBtnCancel')
 
         grid.addWidget(self._b_testcut,       0, 0)
@@ -210,10 +212,34 @@ class DashboardPage(QWidget):
 
         return area
 
+
     def _abtn(self, label, obj_name):
-        b = QPushButton(label)
+        emoji_pattern = re.compile(
+            "[\U0001F300-\U0001FAFF\u2600-\u27BF]+",
+            flags=re.UNICODE
+        )
+
+        def replace_emoji(match):
+            return f'<span style="font-size:20px;">{match.group(0)}</span>'
+
+        styled_label = emoji_pattern.sub(replace_emoji, label)
+        styled_label = styled_label.replace("\n", "<br>")
+
+        b = QPushButton()
+        layout = QVBoxLayout(b)
+
+        lbl = QLabel(styled_label)
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setTextFormat(Qt.RichText)
+
+        lbl.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        layout.addWidget(lbl)
+        layout.setContentsMargins(0, 0, 0, 0)
+
         b.setObjectName(obj_name)
         b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         return b
 
     # ── Signal wiring ─────────────────────────────────────────────────────────

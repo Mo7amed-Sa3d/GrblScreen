@@ -13,11 +13,13 @@ from main_window     import MainWindow
 def main():
     # Portrait display rotation for BTT TFT70 DSI
     os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    QApplication.setAttribute(Qt.AA_SynthesizeMouseForUnhandledTouchEvents, True)
+    QApplication.setAttribute(Qt.AA_SynthesizeTouchForUnhandledMouseEvents, True)
 
     app = QApplication(sys.argv)
     app.setApplicationName('CutterScreen')
-    app.setFont(QFont('DejaVu Sans', 12))
-
+    app.setFont(QFont('Noto Sans', 12))
     # Load stylesheet
     qss = os.path.join(os.path.dirname(__file__), 'style.qss')
     try:

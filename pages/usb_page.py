@@ -165,19 +165,6 @@ class UsbPage(QWidget):
 
         self._refresh()
 
-    def closeEvent(self, event):
-        """Clean up resources when widget is closed."""
-        self._idle_timer.stop()
-        if self._send_thread is not None and self._send_thread.isRunning():
-            self._send_thread.stop()   # signal thread to exit its loop
-            # No wait() — closing is async; OS will clean up the thread
-        event.accept()
-
-    def hideEvent(self, event):
-        """Clean up when widget is hidden (navigating away)."""
-        self._idle_timer.stop()
-        event.accept()
-
     # ── Directory browsing ────────────────────────────────────────────────────
 
     def _refresh(self):
@@ -316,11 +303,8 @@ class UsbPage(QWidget):
         self._prog_lbl.setText(
             'Run %d / %d — sending…' % (n, t) if t > 1 else 'Sending…')
 
-        # Disconnect previous thread's signals so stale callbacks cannot
-        # fire after the new thread starts. Do NOT call quit()+wait() here:
-        # _FileLoaderThread is a plain Python while-loop (no event loop),
-        # so quit() is a no-op and wait(2000) would block the main thread
-        # for 2 seconds, freezing serial reads and the UI.
+        # Disconnect previous thread's signals to prevent double-firing
+        # when a new thread is created for each repeat.
         if self._send_thread is not None:
             try:
                 self._send_thread.send_line.disconnect()
@@ -355,8 +339,8 @@ class UsbPage(QWidget):
     @pyqtSlot()
     def _on_file_streamed(self):
         """
-        All lines queued to buffer. Machine is executing queued commands.
-        Poll for completion: buffer must drain AND machine must reach Idle.
+        All lines queued. Machine is still cutting.
+        Poll for Idle, then either start next repeat or finish.
         Guard: if _stopped, do nothing.
         """
         if self._stopped:
@@ -365,29 +349,20 @@ class UsbPage(QWidget):
         t = self._total_repeats
         if t > 1:
             self._prog_lbl.setText(
-                'Run %d/%d — buffer flushing, machine cutting…' % (n, t))
+                'Run %d/%d queued ✓ — waiting for machine…' % (n, t))
         else:
-            self._prog_lbl.setText('Buffer flushing, machine cutting…')
+            self._prog_lbl.setText('File queued ✓ — machine is cutting')
 
         # Always poll — whether more repeats remain or not (to update UI)
         self._idle_timer.start()
 
     def _check_idle_for_next_repeat(self):
-        """
-        Poll for job completion:
-        1. Wait for all commands to be sent and acknowledged (buffer empty)
-        2. Wait for machine state to become Idle
-        Only then proceed to next repeat or finish.
-        """
+        """Poll GRBL Idle. When machine finishes, start next repeat or finish."""
         # Hard stop check — belt-and-braces guard
         if self._stopped:
             self._idle_timer.stop()
             return
 
-        # Wait for machine to become Idle.
-        # GRBL only reports Idle when it has finished executing all
-        # buffered commands AND the motion planner queue is empty.
-        # No separate buffer check is needed — Idle means truly done.
         if self._grbl.state != 'Idle':
             return   # still running, keep polling
 
@@ -417,10 +392,7 @@ class UsbPage(QWidget):
         self._idle_timer.stop()
 
         if self._send_thread is not None:
-            self._send_thread.stop()  # sets _stop=True; thread exits its loop
-            # Do NOT call wait() here — it would block the main thread for up
-            # to 2 seconds. The thread will exit on its own after the current
-            # msleep(1) tick. GRBL reset below already clears the motion queue.
+            self._send_thread.stop()  # sets _stop flag; thread won't emit done
 
         self._grbl.reset()            # Ctrl-X: clears GRBL queue
         self._grbl.send('M5')         # knife up
