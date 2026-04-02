@@ -101,6 +101,18 @@ class GrblConnection(QObject):
     def is_connected(self):
         return self._port.isOpen()
 
+    def all_commands_acknowledged(self):
+        """
+        Returns True when:
+          - _cmd_q is empty  (all lines have been written to serial), AND
+          - _in_flight == 0  (GRBL has sent 'ok' for every written command)
+        This is the correct signal that GRBL has received and queued every
+        command we sent. Note: the machine may still be executing the last
+        motion — use this together with state == 'Idle' to know the job
+        is truly complete.
+        """
+        return len(self._cmd_q) == 0 and self._in_flight == 0
+
     @staticmethod
     def available_ports():
         return [(i.portName(), i.description())

@@ -357,14 +357,26 @@ class UsbPage(QWidget):
         self._idle_timer.start()
 
     def _check_idle_for_next_repeat(self):
-        """Poll GRBL Idle. When machine finishes, start next repeat or finish."""
-        # Hard stop check — belt-and-braces guard
+        """
+        Poll for true job completion. Two conditions must both be true:
+          1. All commands acknowledged: _cmd_q empty AND _in_flight == 0.
+             Without this, the timer triggers while hundreds of commands
+             are still sitting in Qt's queue waiting to be sent to serial.
+             GRBL looks Idle between small commands, giving a false 'done'.
+          2. GRBL state is Idle: machine has stopped moving.
+        """
         if self._stopped:
             self._idle_timer.stop()
             return
 
+        # Condition 1: every line has been written to serial AND
+        # every written command has received its 'ok' response.
+        if not self._grbl.all_commands_acknowledged():
+            return   # still pushing lines or waiting for 'ok' responses
+
+        # Condition 2: machine has finished executing the last motion.
         if self._grbl.state != 'Idle':
-            return   # still running, keep polling
+            return   # still moving
 
         self._idle_timer.stop()
         self._current_repeat += 1

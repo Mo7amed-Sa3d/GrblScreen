@@ -91,6 +91,9 @@ class TiltCorrector:
         self._grbl.send(_apply(cmd, self._correction))
 
     # ── Pass-throughs ─────────────────────────────────────────────────────────
+    def all_commands_acknowledged(self):
+        return self._grbl.all_commands_acknowledged()
+
     def connect(self, *a, **kw):     return self._grbl.connect(*a, **kw)
     def disconnect(self):            self._grbl.disconnect()
     def is_connected(self):          return self._grbl.is_connected()
