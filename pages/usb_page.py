@@ -72,6 +72,8 @@ class UsbPage(QWidget):
         self._total_repeats  = 1
         self._stopped = False
         self._idle_consecutive = 0
+        self._stable_count = 0      # consecutive polls with no movement
+        self._last_pos = None       # last recorded machine position (x, y)
         self._idle_timer = QTimer(self)
         self._idle_timer.setInterval(500)
         self._idle_timer.timeout.connect(self._check_idle_for_next_repeat)
@@ -360,26 +362,46 @@ class UsbPage(QWidget):
         self._idle_timer.start()
 
     def _check_idle_for_next_repeat(self):
-        """Robust job completion detection: require stable Idle state."""
+        """
+        Determine if the current repeat is truly finished.
+        Conditions:
+        1. All commands sent and acknowledged (buffer empty).
+        2. Machine position has not moved more than 0.01 mm
+            for two consecutive polls (approx 1 second).
+        """
         if self._stopped:
             self._idle_timer.stop()
             return
 
-        # Condition 1: all commands sent and acknowledged
+        # Condition 1: buffer must be empty
         if not self._grbl.all_commands_acknowledged():
-            self._idle_consecutive = 0   # reset counter
+            self._stable_count = 0
+            self._last_pos = None
             return
 
-        # Condition 2: machine must be Idle
-        if self._grbl.state != 'Idle':
-            self._idle_consecutive = 0
+        # Get current machine position (X, Y)
+        current_pos = self._grbl.mpos[:2]   # (x, y)
+
+        # First poll after buffer empty – store position and wait
+        if self._last_pos is None:
+            self._last_pos = current_pos
             return
 
-        # Increment consecutive idle count (called every 500ms)
-        self._idle_consecutive = getattr(self, '_idle_consecutive', 0) + 1
+        # Check if position changed beyond a tiny tolerance (0.01 mm)
+        moved = (abs(current_pos[0] - self._last_pos[0]) > 0.01 or
+                abs(current_pos[1] - self._last_pos[1]) > 0.01)
 
-        # Need 2 consecutive idle polls (1 second) to confirm
-        if self._idle_consecutive < 2:
+        if moved:
+            # Still moving – reset counter and update last position
+            self._stable_count = 0
+            self._last_pos = current_pos
+            return
+
+        # No movement: increment stability counter
+        self._stable_count += 1
+
+        # Require two consecutive stable polls (each poll is 500 ms → total 1 sec)
+        if self._stable_count < 2:
             return
 
         # --- Job is truly complete ---
@@ -392,7 +414,8 @@ class UsbPage(QWidget):
             self._btn_run.setEnabled(True)
             self._btn_stop.setEnabled(False)
             self._current_repeat = 0
-            self._idle_consecutive = 0
+            self._stable_count = 0
+            self._last_pos = None
         else:
             # Start next repeat
             self._begin_repeat()
