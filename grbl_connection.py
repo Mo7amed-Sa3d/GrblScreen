@@ -144,8 +144,15 @@ class GrblConnection(QObject):
         if self._port.isOpen():
             self._port.write(bytes([byte]))
 
-    def feed_hold(self):    self.send_rt(0x21)   # '!'
-    def cycle_start(self):  self.send_rt(0x7E)   # '~'
+    def feed_hold(self):
+        print("DEBUG: feed_hold() called from", end=" ")
+        import traceback; traceback.print_stack(limit=3)
+        self.send_rt(0x21)
+
+    def cycle_start(self):
+        print("DEBUG: cycle_start() called from", end=" ")
+        import traceback; traceback.print_stack(limit=3)
+        self.send_rt(0x7E)
     def cancel_jog(self):   self.send_rt(0x85)
 
     def reset(self):
