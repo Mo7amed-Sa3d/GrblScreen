@@ -146,12 +146,12 @@ class GrblConnection(QObject):
 
     def feed_hold(self):
         print("DEBUG: feed_hold() called from", end=" ")
-        import traceback; traceback.print_stack(limit=3)
+        import traceback; traceback.print_stack(limit=5)
         self.send_rt(0x21)
 
     def cycle_start(self):
         print("DEBUG: cycle_start() called from", end=" ")
-        import traceback; traceback.print_stack(limit=3)
+        import traceback; traceback.print_stack(limit=5)
         self.send_rt(0x7E)
     def cancel_jog(self):   self.send_rt(0x85)
 
