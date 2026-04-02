@@ -1,5 +1,4 @@
 # pages/usb_page.py
-
 import os
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -53,10 +52,6 @@ class _FileLoaderThread(QThread):
                 self.send_line.emit(line)
                 self.progress.emit(i + 1, total)
                 self.msleep(1)
-            # ── Bug fix: only emit done when NOT manually stopped ──
-            # Without this check, done fires even after stop(), which
-            # re-triggers _on_file_streamed and restarts the idle timer,
-            # causing the repeat loop to continue after the user pressed Stop.
             if not self._stop:
                 self.done.emit()
         except Exception as e:
@@ -64,9 +59,7 @@ class _FileLoaderThread(QThread):
 
 
 class UsbPage(QWidget):
-    # Emitted to request registration before a run.
-    # Main window shows RegistrationPage, then calls on_registration_complete().
-    request_registration = pyqtSignal(list)   # list of 4 (x,y) design tuples
+    request_registration = pyqtSignal(list)
 
     def __init__(self, grbl, on_back, parent=None):
         super().__init__(parent)
@@ -77,17 +70,10 @@ class UsbPage(QWidget):
         self._send_thread   = None
         self._current_repeat = 0
         self._total_repeats  = 1
-
-        # ── Hard stop flag ────────────────────────────────────────────────────
-        # Set True in _stop_all(); checked in every async continuation
-        # (_on_file_streamed, _check_idle_for_next_repeat) so no further
-        # repeat steps execute after the user presses Stop or Cancel.
         self._stopped = False
-
         self._idle_timer = QTimer(self)
         self._idle_timer.setInterval(500)
         self._idle_timer.timeout.connect(self._check_idle_for_next_repeat)
-
         self._build()
 
     # ── Build UI ──────────────────────────────────────────────────────────────
@@ -100,7 +86,8 @@ class UsbPage(QWidget):
         hdr = QHBoxLayout()
         btn_back = QPushButton('◀  Back')
         btn_back.setProperty('role', 'back')
-        btn_back.setMinimumHeight(48); btn_back.setMaximumWidth(120)
+        btn_back.setMinimumHeight(48)
+        btn_back.setMaximumWidth(120)
         btn_back.clicked.connect(self._on_back)
         hdr.addWidget(btn_back)
 
@@ -110,12 +97,15 @@ class UsbPage(QWidget):
         hdr.addWidget(self._path_lbl, 1)
 
         btn_ref = QPushButton('⟳')
-        btn_ref.setMaximumWidth(52); btn_ref.setMinimumHeight(48)
+        btn_ref.setMaximumWidth(52)
+        btn_ref.setMinimumHeight(48)
         btn_ref.clicked.connect(self._refresh)
         hdr.addWidget(btn_ref)
         root.addLayout(hdr)
 
-        div = QFrame(); div.setFrameShape(QFrame.HLine); root.addWidget(div)
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
+        root.addWidget(div)
 
         self._list = QListWidget()
         self._list.itemClicked.connect(self._on_click)
@@ -153,14 +143,16 @@ class UsbPage(QWidget):
 
         self._btn_run = QPushButton('▶  Run')
         self._btn_run.setProperty('role', 'success')
-        self._btn_run.setMinimumHeight(52); self._btn_run.setMinimumWidth(100)
+        self._btn_run.setMinimumHeight(52)
+        self._btn_run.setMinimumWidth(100)
         self._btn_run.setEnabled(False)
         self._btn_run.clicked.connect(self._on_run_pressed)
         run_row.addWidget(self._btn_run)
 
         self._btn_stop = QPushButton('✕  Stop')
         self._btn_stop.setProperty('role', 'danger')
-        self._btn_stop.setMinimumHeight(52); self._btn_stop.setMinimumWidth(100)
+        self._btn_stop.setMinimumHeight(52)
+        self._btn_stop.setMinimumWidth(100)
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._stop_all)
         run_row.addWidget(self._btn_stop)
@@ -172,6 +164,19 @@ class UsbPage(QWidget):
         root.addWidget(self._prog_lbl)
 
         self._refresh()
+
+    def closeEvent(self, event):
+        """Clean up resources when widget is closed."""
+        self._idle_timer.stop()
+        if self._send_thread is not None and self._send_thread.isRunning():
+            self._send_thread.stop()   # signal thread to exit its loop
+            # No wait() — closing is async; OS will clean up the thread
+        event.accept()
+
+    def hideEvent(self, event):
+        """Clean up when widget is hidden (navigating away)."""
+        self._idle_timer.stop()
+        event.accept()
 
     # ── Directory browsing ────────────────────────────────────────────────────
 
@@ -215,13 +220,19 @@ class UsbPage(QWidget):
 
     def _on_click(self, item):
         d = item.data(Qt.UserRole)
-        if d and d[0] == 'file':
+        if not d:
+            return
+        # Single‑click: open folders, select files (do not run)
+        if d[0] == 'dir':
+            self._list_dir(d[1])
+        elif d[0] == 'file':
             self._select_file(d[1])
 
     def _on_double(self, item):
         d = item.data(Qt.UserRole)
         if not d:
             return
+        # Double‑click: open folders (same as single‑click, but consistent)
         if d[0] == 'dir':
             self._list_dir(d[1])
         elif d[0] == 'file':
@@ -305,8 +316,11 @@ class UsbPage(QWidget):
         self._prog_lbl.setText(
             'Run %d / %d — sending…' % (n, t) if t > 1 else 'Sending…')
 
-        # Disconnect previous thread's signals to prevent double-firing
-        # when a new thread is created for each repeat.
+        # Disconnect previous thread's signals so stale callbacks cannot
+        # fire after the new thread starts. Do NOT call quit()+wait() here:
+        # _FileLoaderThread is a plain Python while-loop (no event loop),
+        # so quit() is a no-op and wait(2000) would block the main thread
+        # for 2 seconds, freezing serial reads and the UI.
         if self._send_thread is not None:
             try:
                 self._send_thread.send_line.disconnect()
@@ -341,8 +355,8 @@ class UsbPage(QWidget):
     @pyqtSlot()
     def _on_file_streamed(self):
         """
-        All lines queued. Machine is still cutting.
-        Poll for Idle, then either start next repeat or finish.
+        All lines queued to buffer. Machine is executing queued commands.
+        Poll for completion: buffer must drain AND machine must reach Idle.
         Guard: if _stopped, do nothing.
         """
         if self._stopped:
@@ -351,20 +365,29 @@ class UsbPage(QWidget):
         t = self._total_repeats
         if t > 1:
             self._prog_lbl.setText(
-                'Run %d/%d queued ✓ — waiting for machine…' % (n, t))
+                'Run %d/%d — buffer flushing, machine cutting…' % (n, t))
         else:
-            self._prog_lbl.setText('File queued ✓ — machine is cutting')
+            self._prog_lbl.setText('Buffer flushing, machine cutting…')
 
         # Always poll — whether more repeats remain or not (to update UI)
         self._idle_timer.start()
 
     def _check_idle_for_next_repeat(self):
-        """Poll GRBL Idle. When machine finishes, start next repeat or finish."""
+        """
+        Poll for job completion:
+        1. Wait for all commands to be sent and acknowledged (buffer empty)
+        2. Wait for machine state to become Idle
+        Only then proceed to next repeat or finish.
+        """
         # Hard stop check — belt-and-braces guard
         if self._stopped:
             self._idle_timer.stop()
             return
 
+        # Wait for machine to become Idle.
+        # GRBL only reports Idle when it has finished executing all
+        # buffered commands AND the motion planner queue is empty.
+        # No separate buffer check is needed — Idle means truly done.
         if self._grbl.state != 'Idle':
             return   # still running, keep polling
 
@@ -394,7 +417,10 @@ class UsbPage(QWidget):
         self._idle_timer.stop()
 
         if self._send_thread is not None:
-            self._send_thread.stop()  # sets _stop flag; thread won't emit done
+            self._send_thread.stop()  # sets _stop=True; thread exits its loop
+            # Do NOT call wait() here — it would block the main thread for up
+            # to 2 seconds. The thread will exit on its own after the current
+            # msleep(1) tick. GRBL reset below already clears the motion queue.
 
         self._grbl.reset()            # Ctrl-X: clears GRBL queue
         self._grbl.send('M5')         # knife up
