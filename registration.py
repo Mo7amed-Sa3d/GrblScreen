@@ -41,6 +41,10 @@ BLUR_KERNEL    = (5, 5) # GaussianBlur before threshold
 MAX_PX_OFFSET  = 800    # pixels - allow larger offset for 1920px frame
 
 # ── RegMarks parser ───────────────────────────────────────────────────────────
+
+_D_RE  = re.compile(r'\bD\s*([\d.]+)', re.IGNORECASE)
+_PL_RE = re.compile(r'(?:paperlength|paper[_\s]length|\bpl\b)\s*[=:\s]\s*([\d.]+)', re.IGNORECASE)
+
 _RM_RE = re.compile(
     r'RegMarks\s*'
     r'\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)\s*'
@@ -70,6 +74,47 @@ def parse_regmarks(filepath):
     except Exception as e:
         logging.warning('parse_regmarks error: %s', e)
     return None
+
+_PAPER_LEN_RE = re.compile(
+    r'(?:M100\b.*?\bD([\d.]+)'       # M100 F... D400
+    r'|PaperLength\s*[=:\s]+([\d.]+)'  # ;PaperLength=400
+    r'|\bPL\s*[=:\s]+([\d.]+))',      # ;PL=400
+    re.IGNORECASE
+)
+
+
+def parse_paper_length(filepath):
+    """
+    Parse paper length (mm) from the first non-empty line of a G-code file.
+
+    Accepted formats (first non-empty line):
+      M100 F8000 D400          → 400.0  (D word)
+      ;PaperLength=400         → 400.0
+      ;PL=400                  → 400.0
+
+    Returns float in mm, or None if not found.
+    """
+    try:
+        with open(filepath, 'r', errors='replace') as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # Try the combined pattern on the first non-empty line
+                m = _PAPER_LEN_RE.search(stripped)
+                if m:
+                    val = m.group(1) or m.group(2) or m.group(3)
+                    if val:
+                        result = float(val)
+                        logging.info('parse_paper_length: %.1f mm', result)
+                        return result
+                # If first line has no match, stop (don't scan whole file)
+                break
+    except Exception as e:
+        logging.warning('parse_paper_length error: %s', e)
+    return None
+
+
 
 
 # ── Scan result ───────────────────────────────────────────────────────────────

@@ -59,7 +59,7 @@ class _FileLoaderThread(QThread):
 
 
 class UsbPage(QWidget):
-    request_registration = pyqtSignal(list)
+    request_registration = pyqtSignal(list, float)  # design_pts, paper_length_mm
 
     def __init__(self, grbl, on_back, parent=None):
         super().__init__(parent)
@@ -67,6 +67,7 @@ class UsbPage(QWidget):
         self._on_back       = on_back
         self._selected_path = None
         self._design_pts    = None
+        self._paper_length  = 300.0   # mm, from first G-code line
         self._send_thread   = None
         self._current_repeat = 0
         self._total_repeats  = 1
@@ -236,7 +237,9 @@ class UsbPage(QWidget):
             'color:#ff8c00; font-weight:bold; font-size:13px;')
         self._btn_run.setEnabled(True)
 
-        from registration import parse_regmarks
+        from registration import parse_regmarks, parse_paper_length
+        pl = parse_paper_length(path)
+        self._paper_length = pl if pl is not None else 300.0
         pts = parse_regmarks(path)
         if pts:
             self._design_pts = pts
@@ -283,7 +286,7 @@ class UsbPage(QWidget):
 
         if self._design_pts:
             # Emit signal → main window builds & shows RegistrationPage
-            self.request_registration.emit(self._design_pts)
+            self.request_registration.emit(self._design_pts, self._paper_length)
             # _start_send() is called from on_registration_complete()
         else:
             self._start_send()

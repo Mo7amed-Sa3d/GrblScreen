@@ -54,8 +54,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._grbl          = grbl
         self._corrector     = TiltCorrector(grbl)
-        self._reg_page      = None    # RegistrationPage, or None
+        self._reg_page        = None
         self._last_design_pts = None  # persisted for dashboard alignment button
+        self._last_paper_len  = 300.0 # mm, persisted for dashboard alignment button
 
         self.setWindowTitle('Cutter Screen')
         self.setWindowFlags(Qt.FramelessWindowHint)
@@ -132,9 +133,10 @@ class MainWindow(QMainWindow):
         """
         if self._last_design_pts:
             self._build_reg_page(
-                design_pts  = self._last_design_pts,
-                on_complete = self._on_dashboard_alignment_complete,
-                on_back     = lambda: self._go(S_DASH),
+                design_pts   = self._last_design_pts,
+                paper_length = self._last_paper_len,
+                on_complete  = self._on_dashboard_alignment_complete,
+                on_back      = lambda: self._go(S_DASH),
             )
             self._go(S_REG)
         else:
@@ -151,16 +153,18 @@ class MainWindow(QMainWindow):
 
     # ── USB-triggered registration ─────────────────────────────────────────────
 
-    def _start_registration(self, design_pts):
+    def _start_registration(self, design_pts, paper_length=300.0):
         """
         Called by USB page before each run (every repeat).
         Builds a fresh RegistrationPage, shows it, then calls back into USB.
         """
-        self._last_design_pts = design_pts  # persist for dashboard button
+        self._last_design_pts = design_pts
+        self._last_paper_len  = paper_length
         self._build_reg_page(
-            design_pts  = design_pts,
-            on_complete = self._on_usb_registration_complete,
-            on_back     = self._on_usb_registration_skipped,
+            design_pts   = design_pts,
+            paper_length = paper_length,
+            on_complete  = self._on_usb_registration_complete,
+            on_back      = self._on_usb_registration_skipped,
         )
         self._go(S_REG)
 
@@ -174,13 +178,14 @@ class MainWindow(QMainWindow):
 
     # ── Registration page builder ──────────────────────────────────────────────
 
-    def _build_reg_page(self, design_pts, on_complete, on_back):
+    def _build_reg_page(self, design_pts, paper_length, on_complete, on_back):
         """Build a new RegistrationPage and install it at S_REG."""
         page = RegistrationPage(
-            corrector   = self._corrector,
-            design_pts  = design_pts,
-            on_complete = on_complete,
-            on_back     = on_back,
+            corrector    = self._corrector,
+            design_pts   = design_pts,
+            paper_length = paper_length,
+            on_complete  = on_complete,
+            on_back      = on_back,
         )
         self._replace_reg_slot(page)
         self._reg_page = page
