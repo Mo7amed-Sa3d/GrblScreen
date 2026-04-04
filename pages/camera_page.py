@@ -194,12 +194,12 @@ class CameraPage(QWidget):
         # Jog controls - compass style
         jog_area = QWidget()
         jog_layout = QVBoxLayout(jog_area)
-        jog_layout.setContentsMargins(12, 12, 12, 8)
-        jog_layout.setSpacing(10)
+        jog_layout.setContentsMargins(8, 8, 8, 4)
+        jog_layout.setSpacing(6)
 
         # X/Y compass grid
         compass = QGridLayout()
-        compass.setSpacing(10)
+        compass.setSpacing(6)
 
         self._b_y_up = self._jbtn('▲')
         self._b_y_down = self._jbtn('▼')
@@ -223,15 +223,17 @@ class CameraPage(QWidget):
         z_row.addStretch()
         z_row.addWidget(self._lbl('Z:', 12, '#aaa'))
         self._b_z_down = self._jbtn('▼')
-        self._b_z_down.setMaximumWidth(50)
+        self._b_z_down.setMaximumWidth(40)
+        self._b_z_down.setMaximumHeight(40)
         self._b_z_up = self._jbtn('▲')
-        self._b_z_up.setMaximumWidth(50)
+        self._b_z_up.setMaximumWidth(40)
+        self._b_z_up.setMaximumHeight(40)
         z_row.addWidget(self._b_z_down)
         z_row.addWidget(self._b_z_up)
         z_row.addStretch()
         jog_layout.addLayout(z_row)
 
-        root.addWidget(jog_area, 2)
+        root.addWidget(jog_area, 1)
 
         # Connect jog buttons
         self._b_y_up.clicked.connect(lambda: self._jog_axis('Y', -5))
@@ -255,6 +257,7 @@ class CameraPage(QWidget):
         b = QPushButton(label)
         b.setObjectName('jogBtn')
         b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        b.setMaximumHeight(80)
         return b
 
     def _resolve_binary(self):
