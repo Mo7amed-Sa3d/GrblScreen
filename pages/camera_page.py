@@ -191,15 +191,16 @@ class CameraPage(QWidget):
 
         div2 = QFrame(); div2.setFrameShape(QFrame.HLine); root.addWidget(div2)
 
-        # Jog controls - compass style
+        # Jog controls - compass style (smaller buttons)
         jog_area = QWidget()
         jog_layout = QVBoxLayout(jog_area)
-        jog_layout.setContentsMargins(8, 8, 8, 4)
-        jog_layout.setSpacing(6)
+        jog_layout.setContentsMargins(8, 4, 8, 4)
+        jog_layout.setSpacing(4)
 
         # X/Y compass grid
         compass = QGridLayout()
-        compass.setSpacing(6)
+        compass.setSpacing(4)
+        compass.setContentsMargins(0, 0, 0, 0)
 
         self._b_y_up = self._jbtn('▲')
         self._b_y_down = self._jbtn('▼')
@@ -211,6 +212,7 @@ class CameraPage(QWidget):
         compass.addWidget(self._b_x_right, 1, 2)
         compass.addWidget(self._b_y_down, 2, 1)
 
+        # Do not stretch rows/columns too aggressively
         for col in range(3):
             compass.setColumnStretch(col, 1)
         for row in range(3):
@@ -220,14 +222,13 @@ class CameraPage(QWidget):
 
         # Z axis controls
         z_row = QHBoxLayout()
+        z_row.setSpacing(6)
         z_row.addStretch()
         z_row.addWidget(self._lbl('Z:', 12, '#aaa'))
         self._b_z_down = self._jbtn('▼')
-        self._b_z_down.setMaximumWidth(40)
-        self._b_z_down.setMaximumHeight(40)
+        self._b_z_down.setFixedSize(50, 50)
         self._b_z_up = self._jbtn('▲')
-        self._b_z_up.setMaximumWidth(40)
-        self._b_z_up.setMaximumHeight(40)
+        self._b_z_up.setFixedSize(50, 50)
         z_row.addWidget(self._b_z_down)
         z_row.addWidget(self._b_z_up)
         z_row.addStretch()
@@ -253,11 +254,26 @@ class CameraPage(QWidget):
         return l
 
     def _jbtn(self, label):
-        """Create a jog button matching dashboard style."""
+        """Create a smaller jog button that does not overlap."""
         b = QPushButton(label)
         b.setObjectName('jogBtn')
-        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        b.setMaximumHeight(80)
+        # Use fixed size to prevent overlapping
+        b.setFixedSize(65, 65)
+        b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # Style for better touch
+        b.setStyleSheet("""
+            QPushButton {
+                font-size: 28px;
+                background-color: #3a3a3a;
+                border: 1px solid #ff8c00;
+                border-radius: 8px;
+                color: #dddddd;
+            }
+            QPushButton:pressed {
+                background-color: #ff8c00;
+                color: black;
+            }
+        """)
         return b
 
     def _resolve_binary(self):
