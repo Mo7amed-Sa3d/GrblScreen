@@ -131,13 +131,13 @@ class CameraPage(QWidget):
     def _build(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(8)
+        root.setSpacing(6)   # reduced spacing
 
         # Header
         hdr = QHBoxLayout()
         btn_back = QPushButton('◀  Back')
         btn_back.setProperty('role', 'back')
-        btn_back.setMinimumHeight(48); btn_back.setMaximumWidth(120)
+        btn_back.setMinimumHeight(40); btn_back.setMaximumWidth(100)  # smaller
         btn_back.clicked.connect(self._go_back)
         hdr.addWidget(btn_back)
 
@@ -146,13 +146,13 @@ class CameraPage(QWidget):
 
         self._btn_start = QPushButton('▶  Start')
         self._btn_start.setProperty('role', 'success')
-        self._btn_start.setMinimumHeight(48); self._btn_start.setMinimumWidth(100)
+        self._btn_start.setMinimumHeight(40); self._btn_start.setMinimumWidth(80)
         self._btn_start.clicked.connect(self._start)
         hdr.addWidget(self._btn_start)
 
         self._btn_stop = QPushButton('■  Stop')
         self._btn_stop.setProperty('role', 'danger')
-        self._btn_stop.setMinimumHeight(48); self._btn_stop.setMinimumWidth(100)
+        self._btn_stop.setMinimumHeight(40); self._btn_stop.setMinimumWidth(80)
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._stop)
         hdr.addWidget(self._btn_stop)
@@ -160,14 +160,15 @@ class CameraPage(QWidget):
 
         div = QFrame(); div.setFrameShape(QFrame.HLine); root.addWidget(div)
 
-        # Coordinates display
+        # Coordinates display (compact)
         coord_layout = QHBoxLayout()
-        coord_layout.addWidget(self._lbl('Position:', 12, '#aaa'))
-        self._coord_x = QLabel('X: 0.0000')
-        self._coord_y = QLabel('Y: 0.0000')
-        self._coord_z = QLabel('Z: 0.0000')
+        coord_layout.setSpacing(8)
+        coord_layout.addWidget(self._lbl('Pos:', 11, '#aaa'))
+        self._coord_x = QLabel('X:0.000')
+        self._coord_y = QLabel('Y:0.000')
+        self._coord_z = QLabel('Z:0.000')
         for lbl in [self._coord_x, self._coord_y, self._coord_z]:
-            lbl.setStyleSheet('color:#4CAF50; font-size:13px; font-family:monospace;')
+            lbl.setStyleSheet('color:#4CAF50; font-size:11px; font-family:monospace;')
         coord_layout.addWidget(self._coord_x)
         coord_layout.addWidget(self._coord_y)
         coord_layout.addWidget(self._coord_z)
@@ -177,7 +178,7 @@ class CameraPage(QWidget):
         # Video display
         self._video = QLabel()
         self._video.setAlignment(Qt.AlignCenter)
-        self._video.setMinimumHeight(300)
+        self._video.setMinimumHeight(250)   # slightly smaller to give space
         self._video.setStyleSheet(
             'background:#111; border:1px solid #444; border-radius:8px; color:#555;')
         self._video.setText('Press ▶ Start to open camera')
@@ -186,20 +187,20 @@ class CameraPage(QWidget):
         # Status
         self._status = QLabel('Camera idle')
         self._status.setAlignment(Qt.AlignCenter)
-        self._status.setStyleSheet('color:#aaa; font-size:13px;')
+        self._status.setStyleSheet('color:#aaa; font-size:11px;')
         root.addWidget(self._status)
 
         div2 = QFrame(); div2.setFrameShape(QFrame.HLine); root.addWidget(div2)
 
-        # Jog controls - compass style (smaller buttons)
+        # Jog controls - compact, small buttons
         jog_area = QWidget()
         jog_layout = QVBoxLayout(jog_area)
-        jog_layout.setContentsMargins(8, 4, 8, 4)
-        jog_layout.setSpacing(4)
+        jog_layout.setContentsMargins(0, 2, 0, 2)
+        jog_layout.setSpacing(2)
 
         # X/Y compass grid
         compass = QGridLayout()
-        compass.setSpacing(4)
+        compass.setSpacing(2)
         compass.setContentsMargins(0, 0, 0, 0)
 
         self._b_y_up = self._jbtn('▲')
@@ -212,29 +213,27 @@ class CameraPage(QWidget):
         compass.addWidget(self._b_x_right, 1, 2)
         compass.addWidget(self._b_y_down, 2, 1)
 
-        # Do not stretch rows/columns too aggressively
+        # Stretch less to keep buttons compact
         for col in range(3):
-            compass.setColumnStretch(col, 1)
+            compass.setColumnStretch(col, 0)
         for row in range(3):
-            compass.setRowStretch(row, 1)
+            compass.setRowStretch(row, 0)
 
-        jog_layout.addLayout(compass, 1)
+        jog_layout.addLayout(compass, 0)  # no stretch
 
         # Z axis controls
         z_row = QHBoxLayout()
-        z_row.setSpacing(6)
+        z_row.setSpacing(4)
         z_row.addStretch()
-        z_row.addWidget(self._lbl('Z:', 12, '#aaa'))
-        self._b_z_down = self._jbtn('▼')
-        self._b_z_down.setFixedSize(50, 50)
-        self._b_z_up = self._jbtn('▲')
-        self._b_z_up.setFixedSize(50, 50)
+        z_row.addWidget(self._lbl('Z:', 11, '#aaa'))
+        self._b_z_down = self._jbtn('▼', size=40)
+        self._b_z_up = self._jbtn('▲', size=40)
         z_row.addWidget(self._b_z_down)
         z_row.addWidget(self._b_z_up)
         z_row.addStretch()
         jog_layout.addLayout(z_row)
 
-        root.addWidget(jog_area, 1)
+        root.addWidget(jog_area, 0)  # no stretch, keep small
 
         # Connect jog buttons
         self._b_y_up.clicked.connect(lambda: self._jog_axis('Y', -5))
@@ -253,26 +252,24 @@ class CameraPage(QWidget):
         l.setStyleSheet('font-size:%dpx; font-weight:bold; color:%s;' % (size, color))
         return l
 
-    def _jbtn(self, label):
-        """Create a smaller jog button that does not overlap."""
+    def _jbtn(self, label, size=50):
+        """Create a small, compact jog button."""
         b = QPushButton(label)
         b.setObjectName('jogBtn')
-        # Use fixed size to prevent overlapping
-        b.setFixedSize(65, 65)
+        b.setFixedSize(size, size)
         b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        # Style for better touch
-        b.setStyleSheet("""
-            QPushButton {
-                font-size: 28px;
+        b.setStyleSheet(f"""
+            QPushButton {{
+                font-size: {24 if size >= 50 else 20}px;
                 background-color: #3a3a3a;
                 border: 1px solid #ff8c00;
-                border-radius: 8px;
+                border-radius: 6px;
                 color: #dddddd;
-            }
-            QPushButton:pressed {
+            }}
+            QPushButton:pressed {{
                 background-color: #ff8c00;
                 color: black;
-            }
+            }}
         """)
         return b
 
@@ -294,12 +291,12 @@ class CameraPage(QWidget):
                 'Run:  sudo apt install -y rpicam-apps   (or libcamera-apps)\n'
                 'Then check:  which rpicam-vid  or  which libcamera-vid'
             )
-            self._status.setStyleSheet('color:#f44336; font-size:13px;')
+            self._status.setStyleSheet('color:#f44336; font-size:11px;')
             return
 
         self._video.setText('Starting camera…')
         self._status.setText('Using: ' + binary)
-        self._status.setStyleSheet('color:#aaa; font-size:12px;')
+        self._status.setStyleSheet('color:#aaa; font-size:11px;')
 
         self._thread = _MjpegThread(binary, width=3280, height=2464, fps=15)
         self._thread.frame_ready.connect(self._on_frame)
@@ -334,7 +331,7 @@ class CameraPage(QWidget):
     @pyqtSlot(str)
     def _on_error(self, msg):
         self._status.setText(msg)
-        self._status.setStyleSheet('color:#f44336; font-size:12px;')
+        self._status.setStyleSheet('color:#f44336; font-size:11px;')
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
 
@@ -342,14 +339,13 @@ class CameraPage(QWidget):
         """Send a jog command for the specified axis and distance (mm)."""
         if not self._grbl or not self._grbl.is_connected():
             self._status.setText('Not connected to machine')
-            self._status.setStyleSheet('color:#f44336; font-size:12px;')
+            self._status.setStyleSheet('color:#f44336; font-size:11px;')
             return
-        # Jog with speed of 2000 mm/min
         self._grbl.jog(axis, dist, 2000)
 
     @pyqtSlot(float, float, float)
     def _on_position_changed(self, x, y, z):
         """Update the coordinate display with current position."""
-        self._coord_x.setText(f'X: {x:8.4f}')
-        self._coord_y.setText(f'Y: {y:8.4f}')
-        self._coord_z.setText(f'Z: {z:8.4f}')
+        self._coord_x.setText(f'X:{x:7.3f}')
+        self._coord_y.setText(f'Y:{y:7.3f}')
+        self._coord_z.setText(f'Z:{z:7.3f}')
