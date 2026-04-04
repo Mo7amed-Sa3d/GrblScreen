@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
             on_back = lambda: self._go(S_DASH),
         )
         self._cam = CameraPage(
+            grbl    = self._corrector,
             on_back = lambda: self._go(S_DASH),
         )
         self._settings = SettingsPage(

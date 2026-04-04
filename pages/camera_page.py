@@ -120,9 +120,10 @@ class _MjpegThread(QThread):
 
 
 class CameraPage(QWidget):
-    def __init__(self, on_back, parent=None):
+    def __init__(self, on_back, grbl=None, parent=None):
         super().__init__(parent)
         self._on_back = on_back
+        self._grbl    = grbl
         self._thread  = None
         self._binary  = None   # resolved path to camera binary
         self._build()
@@ -159,6 +160,20 @@ class CameraPage(QWidget):
 
         div = QFrame(); div.setFrameShape(QFrame.HLine); root.addWidget(div)
 
+        # Coordinates display
+        coord_layout = QHBoxLayout()
+        coord_layout.addWidget(self._lbl('Position:', 12, '#aaa'))
+        self._coord_x = QLabel('X: 0.0000')
+        self._coord_y = QLabel('Y: 0.0000')
+        self._coord_z = QLabel('Z: 0.0000')
+        for lbl in [self._coord_x, self._coord_y, self._coord_z]:
+            lbl.setStyleSheet('color:#4CAF50; font-size:13px; font-family:monospace;')
+        coord_layout.addWidget(self._coord_x)
+        coord_layout.addWidget(self._coord_y)
+        coord_layout.addWidget(self._coord_z)
+        coord_layout.addStretch()
+        root.addLayout(coord_layout)
+
         # Video display
         self._video = QLabel()
         self._video.setAlignment(Qt.AlignCenter)
@@ -173,6 +188,64 @@ class CameraPage(QWidget):
         self._status.setAlignment(Qt.AlignCenter)
         self._status.setStyleSheet('color:#aaa; font-size:13px;')
         root.addWidget(self._status)
+
+        div2 = QFrame(); div2.setFrameShape(QFrame.HLine); root.addWidget(div2)
+
+        # Jog controls
+        jog_layout = QHBoxLayout()
+        jog_layout.addStretch()
+        
+        # X axis jogging
+        x_layout = QVBoxLayout()
+        x_layout.addWidget(self._lbl('X', 10, '#f44336'))
+        x_buttons = QHBoxLayout()
+        btn_x_minus = QPushButton('◀ -5')
+        btn_x_minus.setMaximumWidth(60)
+        btn_x_minus.clicked.connect(lambda: self._jog_axis('X', -5))
+        btn_x_plus = QPushButton('+5 ▶')
+        btn_x_plus.setMaximumWidth(60)
+        btn_x_plus.clicked.connect(lambda: self._jog_axis('X', 5))
+        x_buttons.addWidget(btn_x_minus)
+        x_buttons.addWidget(btn_x_plus)
+        x_layout.addLayout(x_buttons)
+        jog_layout.addLayout(x_layout)
+        
+        # Y axis jogging
+        y_layout = QVBoxLayout()
+        y_layout.addWidget(self._lbl('Y', 10, '#4CAF50'))
+        y_buttons = QHBoxLayout()
+        btn_y_minus = QPushButton('◀ -5')
+        btn_y_minus.setMaximumWidth(60)
+        btn_y_minus.clicked.connect(lambda: self._jog_axis('Y', -5))
+        btn_y_plus = QPushButton('+5 ▶')
+        btn_y_plus.setMaximumWidth(60)
+        btn_y_plus.clicked.connect(lambda: self._jog_axis('Y', 5))
+        y_buttons.addWidget(btn_y_minus)
+        y_buttons.addWidget(btn_y_plus)
+        y_layout.addLayout(y_buttons)
+        jog_layout.addLayout(y_layout)
+        
+        # Z axis jogging
+        z_layout = QVBoxLayout()
+        z_layout.addWidget(self._lbl('Z', 10, '#2196F3'))
+        z_buttons = QHBoxLayout()
+        btn_z_minus = QPushButton('▼ -5')
+        btn_z_minus.setMaximumWidth(60)
+        btn_z_minus.clicked.connect(lambda: self._jog_axis('Z', -5))
+        btn_z_plus = QPushButton('▲ +5')
+        btn_z_plus.setMaximumWidth(60)
+        btn_z_plus.clicked.connect(lambda: self._jog_axis('Z', 5))
+        z_buttons.addWidget(btn_z_minus)
+        z_buttons.addWidget(btn_z_plus)
+        z_layout.addLayout(z_buttons)
+        jog_layout.addLayout(z_layout)
+        
+        jog_layout.addStretch()
+        root.addLayout(jog_layout)
+
+        # Connect to grbl position updates
+        if self._grbl:
+            self._grbl.position_changed.connect(self._on_position_changed)
 
     def _lbl(self, text, size=14, color='#fff'):
         l = QLabel(text)
@@ -204,7 +277,7 @@ class CameraPage(QWidget):
         self._status.setText('Using: ' + binary)
         self._status.setStyleSheet('color:#aaa; font-size:12px;')
 
-        self._thread = _MjpegThread(binary, width=460, height=380, fps=15)
+        self._thread = _MjpegThread(binary, width=3280, height=2464, fps=15)
         self._thread.frame_ready.connect(self._on_frame)
         self._thread.error.connect(self._on_error)
         self._thread.start()
@@ -240,3 +313,19 @@ class CameraPage(QWidget):
         self._status.setStyleSheet('color:#f44336; font-size:12px;')
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
+
+    def _jog_axis(self, axis, dist):
+        """Send a jog command for the specified axis and distance (mm)."""
+        if not self._grbl or not self._grbl.is_connected():
+            self._status.setText('Not connected to machine')
+            self._status.setStyleSheet('color:#f44336; font-size:12px;')
+            return
+        # Jog with speed of 300 mm/min
+        self._grbl.jog(axis, dist, 300)
+
+    @pyqtSlot(float, float, float)
+    def _on_position_changed(self, x, y, z):
+        """Update the coordinate display with current position."""
+        self._coord_x.setText(f'X: {x:8.4f}')
+        self._coord_y.setText(f'Y: {y:8.4f}')
+        self._coord_z.setText(f'Z: {z:8.4f}')
