@@ -11,8 +11,8 @@
 import subprocess
 import os
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QPushButton, QFrame, QSizePolicy
 )
 from PyQt5.QtCore  import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui   import QPixmap, QImage
@@ -191,57 +191,55 @@ class CameraPage(QWidget):
 
         div2 = QFrame(); div2.setFrameShape(QFrame.HLine); root.addWidget(div2)
 
-        # Jog controls
-        jog_layout = QHBoxLayout()
-        jog_layout.addStretch()
-        
-        # X axis jogging
-        x_layout = QVBoxLayout()
-        x_layout.addWidget(self._lbl('X', 10, '#f44336'))
-        x_buttons = QHBoxLayout()
-        btn_x_minus = QPushButton('◀ -5')
-        btn_x_minus.setMaximumWidth(60)
-        btn_x_minus.clicked.connect(lambda: self._jog_axis('X', -5))
-        btn_x_plus = QPushButton('+5 ▶')
-        btn_x_plus.setMaximumWidth(60)
-        btn_x_plus.clicked.connect(lambda: self._jog_axis('X', 5))
-        x_buttons.addWidget(btn_x_minus)
-        x_buttons.addWidget(btn_x_plus)
-        x_layout.addLayout(x_buttons)
-        jog_layout.addLayout(x_layout)
-        
-        # Y axis jogging
-        y_layout = QVBoxLayout()
-        y_layout.addWidget(self._lbl('Y', 10, '#4CAF50'))
-        y_buttons = QHBoxLayout()
-        btn_y_minus = QPushButton('◀ -5')
-        btn_y_minus.setMaximumWidth(60)
-        btn_y_minus.clicked.connect(lambda: self._jog_axis('Y', -5))
-        btn_y_plus = QPushButton('+5 ▶')
-        btn_y_plus.setMaximumWidth(60)
-        btn_y_plus.clicked.connect(lambda: self._jog_axis('Y', 5))
-        y_buttons.addWidget(btn_y_minus)
-        y_buttons.addWidget(btn_y_plus)
-        y_layout.addLayout(y_buttons)
-        jog_layout.addLayout(y_layout)
-        
-        # Z axis jogging
-        z_layout = QVBoxLayout()
-        z_layout.addWidget(self._lbl('Z', 10, '#2196F3'))
-        z_buttons = QHBoxLayout()
-        btn_z_minus = QPushButton('▼ -5')
-        btn_z_minus.setMaximumWidth(60)
-        btn_z_minus.clicked.connect(lambda: self._jog_axis('Z', -5))
-        btn_z_plus = QPushButton('▲ +5')
-        btn_z_plus.setMaximumWidth(60)
-        btn_z_plus.clicked.connect(lambda: self._jog_axis('Z', 5))
-        z_buttons.addWidget(btn_z_minus)
-        z_buttons.addWidget(btn_z_plus)
-        z_layout.addLayout(z_buttons)
-        jog_layout.addLayout(z_layout)
-        
-        jog_layout.addStretch()
-        root.addLayout(jog_layout)
+        # Jog controls - compass style
+        jog_area = QWidget()
+        jog_layout = QVBoxLayout(jog_area)
+        jog_layout.setContentsMargins(12, 12, 12, 8)
+        jog_layout.setSpacing(10)
+
+        # X/Y compass grid
+        compass = QGridLayout()
+        compass.setSpacing(10)
+
+        self._b_y_up = self._jbtn('▲')
+        self._b_y_down = self._jbtn('▼')
+        self._b_x_left = self._jbtn('◀')
+        self._b_x_right = self._jbtn('▶')
+
+        compass.addWidget(self._b_y_up, 0, 1)
+        compass.addWidget(self._b_x_left, 1, 0)
+        compass.addWidget(self._b_x_right, 1, 2)
+        compass.addWidget(self._b_y_down, 2, 1)
+
+        for col in range(3):
+            compass.setColumnStretch(col, 1)
+        for row in range(3):
+            compass.setRowStretch(row, 1)
+
+        jog_layout.addLayout(compass, 1)
+
+        # Z axis controls
+        z_row = QHBoxLayout()
+        z_row.addStretch()
+        z_row.addWidget(self._lbl('Z:', 12, '#aaa'))
+        self._b_z_down = self._jbtn('▼')
+        self._b_z_down.setMaximumWidth(50)
+        self._b_z_up = self._jbtn('▲')
+        self._b_z_up.setMaximumWidth(50)
+        z_row.addWidget(self._b_z_down)
+        z_row.addWidget(self._b_z_up)
+        z_row.addStretch()
+        jog_layout.addLayout(z_row)
+
+        root.addWidget(jog_area, 2)
+
+        # Connect jog buttons
+        self._b_y_up.clicked.connect(lambda: self._jog_axis('Y', -5))
+        self._b_y_down.clicked.connect(lambda: self._jog_axis('Y', 5))
+        self._b_x_left.clicked.connect(lambda: self._jog_axis('X', -5))
+        self._b_x_right.clicked.connect(lambda: self._jog_axis('X', 5))
+        self._b_z_down.clicked.connect(lambda: self._jog_axis('Z', -5))
+        self._b_z_up.clicked.connect(lambda: self._jog_axis('Z', 5))
 
         # Connect to grbl position updates
         if self._grbl:
@@ -251,6 +249,13 @@ class CameraPage(QWidget):
         l = QLabel(text)
         l.setStyleSheet('font-size:%dpx; font-weight:bold; color:%s;' % (size, color))
         return l
+
+    def _jbtn(self, label):
+        """Create a jog button matching dashboard style."""
+        b = QPushButton(label)
+        b.setObjectName('jogBtn')
+        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        return b
 
     def _resolve_binary(self):
         """Find rpicam-vid or libcamera-vid and cache its path. Returns path or None."""
@@ -320,8 +325,8 @@ class CameraPage(QWidget):
             self._status.setText('Not connected to machine')
             self._status.setStyleSheet('color:#f44336; font-size:12px;')
             return
-        # Jog with speed of 300 mm/min
-        self._grbl.jog(axis, dist, 300)
+        # Jog with speed of 2000 mm/min
+        self._grbl.jog(axis, dist, 2000)
 
     @pyqtSlot(float, float, float)
     def _on_position_changed(self, x, y, z):
