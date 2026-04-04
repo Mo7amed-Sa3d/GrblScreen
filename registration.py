@@ -24,8 +24,8 @@ import math
 import logging
 
 # ── Calibration constants — edit for your machine ────────────────────────────
-CAM_OFFSET_X_MM = 0.0     # mm camera is RIGHT of knife (calibrate: measure then set)
-CAM_OFFSET_Y_MM = 0.0     # mm camera is ABOVE knife (calibrate: measure then set)
+CAM_OFFSET_X_MM = 40.122     # mm camera is RIGHT of knife (calibrate: measure then set)
+CAM_OFFSET_Y_MM = 16.344     # mm camera is ABOVE knife (calibrate: measure then set)
 MM_PER_PIXEL    =  0.0099 # mm/pixel — calculated from 5mm dot diameter
                            # at 1920×1920: 5mm dot ≈ 504px diameter → 5/504
                            # Calibrate: measure actual vs expected position
@@ -34,8 +34,8 @@ MM_PER_PIXEL    =  0.0099 # mm/pixel — calculated from 5mm dot diameter
 # ── Blob detection — from confirmed working regdetect.py ─────────────────────
 # Camera captures at 1920×1920 XRGB; dots are large printed circles.
 BLOB_DARK_MAX  = 100    # grayscale threshold (matches regdetect.py)
-BLOB_MIN_AREA  = 100000 # pixels² minimum   (matches regdetect.py)
-BLOB_MAX_AREA  = 400000 # pixels² maximum   (matches regdetect.py)
+BLOB_MIN_AREA  = 200000 # pixels² minimum   (matches regdetect.py)
+BLOB_MAX_AREA  = 700000 # pixels² maximum   (matches regdetect.py)
 BLOB_MIN_ROUND = 0.7    # circularity 0-1   (matches regdetect.py)
 BLUR_KERNEL    = (5, 5) # GaussianBlur before threshold
 MAX_PX_OFFSET  = 800    # pixels - allow larger offset for 1920px frame
