@@ -129,8 +129,8 @@ class DashboardPage(QWidget):
 
         outer.addLayout(compass, 1)
 
-        self._b_up.clicked.connect(   lambda: self._jog('Y', +1))
-        self._b_down.clicked.connect( lambda: self._jog('Y', -1))
+        self._b_up.clicked.connect(   lambda: self._jog('Y', -1))
+        self._b_down.clicked.connect( lambda: self._jog('Y', +1))
         self._b_left.clicked.connect( lambda: self._jog('X', -1))
         self._b_right.clicked.connect(lambda: self._jog('X', +1))
         self._b_home.clicked.connect( lambda: self._grbl.send('$H'))
