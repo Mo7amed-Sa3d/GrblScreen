@@ -127,24 +127,6 @@ class _RegistrationThread(QThread):
 
     def _sequence(self):
 
-        # ── Step 0: Home ──────────────────────────────────────────────────────
-        self._set_step(0, 'HOMING…', '#2196f3')
-        self._status('Sending $H — homing machine…', '#aaa')
-        self.prog_val.emit(2)
-
-        self.send_cmd.emit('$H')
-        time.sleep(0.5)   # give Qt event loop time to deliver the signal
-
-        if not self._wait_queue_clear(timeout=90.0):
-            self.done_fail.emit(
-                'Homing timed out after 90 s.\n'
-                'Check end-stops, wiring, and GRBL $H settings.')
-            return
-
-        self._set_step(0, 'HOMED ✓', '#4caf50')
-        self.prog_val.emit(10)
-        if self._stop_flag: return
-
         # ── Step 1: Paper feed ────────────────────────────────────────────────
         cmd = 'M100 F8000 D%.1f' % self._paper_len
         self._set_step(1, 'FEEDING…', '#2196f3')
@@ -162,6 +144,24 @@ class _RegistrationThread(QThread):
         self._set_step(1, 'FED ✓', '#4caf50')
         self.prog_val.emit(18)
         time.sleep(0.5)   # let paper come to rest
+        if self._stop_flag: return
+
+        # ── Step 0: Home ──────────────────────────────────────────────────────
+        self._set_step(0, 'HOMING…', '#2196f3')
+        self._status('Sending $H — homing machine…', '#aaa')
+        self.prog_val.emit(2)
+
+        self.send_cmd.emit('$H')
+        time.sleep(0.5)   # give Qt event loop time to deliver the signal
+
+        if not self._wait_queue_clear(timeout=90.0):
+            self.done_fail.emit(
+                'Homing timed out after 90 s.\n'
+                'Check end-stops, wiring, and GRBL $H settings.')
+            return
+
+        self._set_step(0, 'HOMED ✓', '#4caf50')
+        self.prog_val.emit(10)
         if self._stop_flag: return
 
         # ── Steps 2-5: Scan each mark ─────────────────────────────────────────
