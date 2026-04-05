@@ -34,7 +34,7 @@ MM_PER_PIXEL    =  0.0040 # mm/pixel — calculated from 5mm dot diameter
 # Added to each scanned mark world position (mm), after vision + CAM_OFFSET math.
 # Set to the opposite of a constant cut error on the workpiece (e.g. cut +4 mm in
 # X → use -4 here). Set to 0.0 when alignment is good.
-SCAN_RESULT_BIAS_X_MM = -2.0
+SCAN_RESULT_BIAS_X_MM = -1.8
 SCAN_RESULT_BIAS_Y_MM = -1.0
 
 # ── Blob detection — from confirmed working regdetect.py ─────────────────────
