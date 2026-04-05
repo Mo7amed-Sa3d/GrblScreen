@@ -24,7 +24,7 @@ import math
 import logging
 
 # ── Calibration constants — edit for your machine ────────────────────────────
-CAM_OFFSET_X_MM = -42.6     # mm camera is RIGHT of knife (calibrate: measure then set)
+CAM_OFFSET_X_MM = -40.6     # mm camera is RIGHT of knife (calibrate: measure then set)
 CAM_OFFSET_Y_MM = 16.344     # mm camera is ABOVE knife (calibrate: measure then set)
 MM_PER_PIXEL    =  0.005333 # mm/pixel — calculated from 5mm dot diameter
                            # at 1920×1920: 5mm dot ≈ 504px diameter → 5/504
