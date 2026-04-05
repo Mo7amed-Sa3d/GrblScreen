@@ -33,9 +33,9 @@ MM_PER_PIXEL    =  0.0099 # mm/pixel — calculated from 5mm dot diameter
 
 # ── Blob detection — from confirmed working regdetect.py ─────────────────────
 # Camera captures at 1920×1920 XRGB; dots are large printed circles.
-BLOB_DARK_MAX  = 100    # grayscale threshold (matches regdetect.py)
+BLOB_DARK_MAX  = 50    # grayscale threshold (matches regdetect.py)
 BLOB_MIN_AREA  = 200000 # pixels² minimum   (matches regdetect.py)
-BLOB_MAX_AREA  = 700000 # pixels² maximum   (matches regdetect.py)
+BLOB_MAX_AREA  = 900000 # pixels² maximum   (matches regdetect.py)
 BLOB_MIN_ROUND = 0.7    # circularity 0-1   (matches regdetect.py)
 BLUR_KERNEL    = (5, 5) # GaussianBlur before threshold
 MAX_PX_OFFSET  = 800    # pixels - allow larger offset for 1920px frame
