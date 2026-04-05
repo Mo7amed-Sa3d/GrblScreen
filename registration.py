@@ -31,6 +31,12 @@ MM_PER_PIXEL    =  0.0020 # mm/pixel — calculated from 5mm dot diameter
                            # Calibrate: measure actual vs expected position
                            # and adjust until marks align perfectly
 
+# Added to each scanned mark world position (mm), after vision + CAM_OFFSET math.
+# Set to the opposite of a constant cut error on the workpiece (e.g. cut +4 mm in
+# X → use -4 here). Set to 0.0 when alignment is good.
+SCAN_RESULT_BIAS_X_MM = -4.0
+SCAN_RESULT_BIAS_Y_MM = 1.0
+
 # ── Blob detection — from confirmed working regdetect.py ─────────────────────
 # Camera captures at 1920×1920 XRGB; dots are large printed circles.
 BLOB_DARK_MAX  = 50    # grayscale threshold (matches regdetect.py)
@@ -384,11 +390,12 @@ def scan_dot(machine_x, machine_y):
     if err:
         return DotScanResult(False, message=err)
 
-    # Camera is CAM_OFFSET from knife tip.
-    # dot world pos = camera_centre + pixel_offset_in_mm
-    # image +Y is downward; machine +Y is upward → negate dy
-    world_x = machine_x + CAM_OFFSET_X_MM + dx_px * MM_PER_PIXEL
-    world_y = machine_y + CAM_OFFSET_Y_MM - dy_px * MM_PER_PIXEL
+    # Camera is CAM_OFFSET from knife tip. Pixel→world uses the same sign convention
+    # as registration_page centering (inverse X / flipped Y vs naive image axes).
+    world_x = (machine_x + CAM_OFFSET_X_MM - dx_px * MM_PER_PIXEL
+               + SCAN_RESULT_BIAS_X_MM)
+    world_y = (machine_y + CAM_OFFSET_Y_MM + dy_px * MM_PER_PIXEL
+               + SCAN_RESULT_BIAS_Y_MM)
 
     logging.info('scan_dot: machine(%.2f,%.2f) px(%+d,%+d) world(%.3f,%.3f)',
                  machine_x, machine_y, dx_px, dy_px, world_x, world_y)

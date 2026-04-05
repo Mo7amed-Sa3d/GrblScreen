@@ -24,17 +24,17 @@
 #            1. capture_frame()       → bgr, gray
 #            2. find_dot_in_frame()   → dx_px, dy_px  (pixels from image centre)
 #            3. Convert:
-#                 dx_mm =  dx_px * MM_PER_PIXEL   (+X machine if dot is right)
-#                 dy_mm = -dy_px * MM_PER_PIXEL   (+Y machine if dot is above)
+#                 dx_mm = -dx_px * MM_PER_PIXEL   (+X machine if dx_mm > 0)
+#                 dy_mm =  dy_px * MM_PER_PIXEL   (+Y machine if dy_mm > 0)
 #            4. error = hypot(dx_mm, dy_mm)
 #            5. If error < 0.05 mm → converged, stop
 #            6. Apply correction:
 #                 G91  G0  X{dx_mm:.4f}  Y{dy_mm:.4f}  G90
 #                 Wait for position to settle (position-tolerance, NOT GRBL state)
 #
-#     c. STORE WORLD POSITION
-#          world_x = knife_x + CAM_OFFSET_X_MM
-#          world_y = knife_y + CAM_OFFSET_Y_MM
+#     c. STORE WORLD POSITION  (inverse pixel terms vs naive scan_dot; + SCAN_RESULT_BIAS_*)
+#          world_x = knife_x + CAM_OFFSET_X_MM - dx_px*MM_PER_PIXEL + SCAN_RESULT_BIAS_X_MM
+#          world_y = knife_y + CAM_OFFSET_Y_MM + dy_px*MM_PER_PIXEL + SCAN_RESULT_BIAS_Y_MM
 #
 #   After all 4 marks → compute affine correction → show "Apply & Cut" button
 #
@@ -222,7 +222,7 @@ class _RegistrationThread(QThread):
         time.sleep(0.25)   # let Qt deliver the queued signals
 
         ok = self._wait_position(target_x, target_y,
-                                 tol=self.COARSE_TOL_MM, timeout=5.0)
+                                 tol=self.COARSE_TOL_MM, timeout=3.0)
         if not ok:
             self._status(
                 'Mark %d: coarse move timeout — proceeding with centering' % (idx+1),
@@ -240,16 +240,15 @@ class _RegistrationThread(QThread):
         """
         Iterative sub-mm centering.  Returns (world_x, world_y) or None.
 
-        Sign convention (consistent with registration.scan_dot):
-            dx_px > 0  ⟹  dot is RIGHT of image centre
-                       ⟹  knife must move RIGHT (+X)
-                       ⟹  dx_mm = +dx_px × MM_PER_PIXEL
-            dy_px > 0  ⟹  dot is BELOW image centre (image Y axis is down)
-                       ⟹  knife must move DOWN (−Y in machine coordinates)
-                       ⟹  dy_mm = −dy_px × MM_PER_PIXEL
+        Sign convention (matches machine / camera wiring on this plotter):
+            dx_mm = −dx_px × MM_PER_PIXEL  (dx_mm > 0 ⇒ G91 +X)
+            dy_mm = +dy_px × MM_PER_PIXEL  (dy_mm > 0 ⇒ G91 +Y)
+        Stored world uses the inverse pixel terms so mark coords match the centering moves.
         Correction command:  G91 G0 X{dx_mm} Y{dy_mm} G90
         """
         last_error = None
+        last_dx_px = 0.0
+        last_dy_px = 0.0
 
         for iteration in range(self.CENTER_MAX_ITER):
             if self._stop_flag:
@@ -279,8 +278,11 @@ class _RegistrationThread(QThread):
                     'Mark %d, iter %d: %s' % (idx+1, iteration+1, det_err))
                 return None
 
+            last_dx_px = float(dx_px)
+            last_dy_px = float(dy_px)
+
             # ── Convert pixel offset → machine mm ─────────────────────────────
-            dx_mm   = -dx_px * reg.MM_PER_PIXEL   # positive = move knife right
+            dx_mm   = -dx_px * reg.MM_PER_PIXEL   # positive = move knife right (+X)
             dy_mm   = dy_px * reg.MM_PER_PIXEL   # positive = move knife up (+Y)
             error   = math.hypot(dx_mm, dy_mm)
             last_error = error
@@ -319,12 +321,14 @@ class _RegistrationThread(QThread):
             time.sleep(0.05)   # brief mechanical settle
 
         # ── Compute final world position ──────────────────────────────────────
-        # Camera is now centred on dot (within tolerance).
-        # Dot position in machine coordinates:
-        #   world = knife_position + camera_offset_from_knife
+        # Inverse pixel terms vs +dx / −dy scan_dot-style math; matches centering moves above.
         kx, ky  = self._corrector.mpos[0], self._corrector.mpos[1]
-        world_x = kx + reg.CAM_OFFSET_X_MM
-        world_y = ky + reg.CAM_OFFSET_Y_MM
+        world_x = (kx + reg.CAM_OFFSET_X_MM
+                   - last_dx_px * reg.MM_PER_PIXEL
+                   + reg.SCAN_RESULT_BIAS_X_MM)
+        world_y = (ky + reg.CAM_OFFSET_Y_MM
+                   + last_dy_px * reg.MM_PER_PIXEL
+                   + reg.SCAN_RESULT_BIAS_Y_MM)
 
         self._status(
             'Mark %d stored: knife=(%.3f, %.3f)  world=(%.3f, %.3f)  '
