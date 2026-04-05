@@ -285,7 +285,7 @@ class _RegistrationThread(QThread):
             error   = math.hypot(dx_mm, dy_mm)
             last_error = error
 
-            self.iter_update.emit(idx, iteration+1, dx_mm, dy_mm, error)
+            self.iter_update.emit(idx, iteration+1, -dx_mm, dy_mm, error)
             self._status(
                 'Mark %d  iter %d/%d  err=%.4f mm  Δx=%.4f  Δy=%.4f' % (
                     idx+1, iteration+1, self.CENTER_MAX_ITER,
