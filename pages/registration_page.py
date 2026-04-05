@@ -311,7 +311,7 @@ class _RegistrationThread(QThread):
             start_pos = self._corrector.mpos[:2]
 
             self.send_cmd.emit('G91')
-            self.send_cmd.emit('G0 X%.4f Y%.4f' % (dx_mm, dy_mm))
+            self.send_cmd.emit('G0 X%.4f Y%.4f' % (-dx_mm, dy_mm))
             self.send_cmd.emit('G90')
             time.sleep(0.20)   # let Qt deliver queued signals before polling
 
