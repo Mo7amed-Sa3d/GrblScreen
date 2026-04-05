@@ -222,7 +222,7 @@ class _RegistrationThread(QThread):
         time.sleep(0.25)   # let Qt deliver the queued signals
 
         ok = self._wait_position(target_x, target_y,
-                                 tol=self.COARSE_TOL_MM, timeout=3.0)
+                                 tol=self.COARSE_TOL_MM, timeout=1.0)
         if not ok:
             self._status(
                 'Mark %d: coarse move timeout — proceeding with centering' % (idx+1),
