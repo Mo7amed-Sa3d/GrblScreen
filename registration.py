@@ -26,7 +26,7 @@ import logging
 # ── Calibration constants — edit for your machine ────────────────────────────
 CAM_OFFSET_X_MM = -40.6     # mm camera is RIGHT of knife (calibrate: measure then set)
 CAM_OFFSET_Y_MM = 16.344     # mm camera is ABOVE knife (calibrate: measure then set)
-MM_PER_PIXEL    =  0.0020 # mm/pixel — calculated from 5mm dot diameter
+MM_PER_PIXEL    =  0.0040 # mm/pixel — calculated from 5mm dot diameter
                            # at 1920×1920: 5mm dot ≈ 504px diameter → 5/504
                            # Calibrate: measure actual vs expected position
                            # and adjust until marks align perfectly
@@ -34,8 +34,8 @@ MM_PER_PIXEL    =  0.0020 # mm/pixel — calculated from 5mm dot diameter
 # Added to each scanned mark world position (mm), after vision + CAM_OFFSET math.
 # Set to the opposite of a constant cut error on the workpiece (e.g. cut +4 mm in
 # X → use -4 here). Set to 0.0 when alignment is good.
-SCAN_RESULT_BIAS_X_MM = 0
-SCAN_RESULT_BIAS_Y_MM = -1.0
+SCAN_RESULT_BIAS_X_MM = 5.0
+SCAN_RESULT_BIAS_Y_MM = 5.0
 
 # ── Blob detection — from confirmed working regdetect.py ─────────────────────
 # Camera captures at 1920×1920 XRGB; dots are large printed circles.
