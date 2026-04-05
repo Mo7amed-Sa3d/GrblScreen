@@ -280,12 +280,12 @@ class _RegistrationThread(QThread):
                 return None
 
             # ── Convert pixel offset → machine mm ─────────────────────────────
-            dx_mm   =  dx_px * reg.MM_PER_PIXEL   # positive = move knife right
-            dy_mm   = -dy_px * reg.MM_PER_PIXEL   # positive = move knife up (+Y)
+            dx_mm   = -dx_px * reg.MM_PER_PIXEL   # positive = move knife right
+            dy_mm   = dy_px * reg.MM_PER_PIXEL   # positive = move knife up (+Y)
             error   = math.hypot(dx_mm, dy_mm)
             last_error = error
 
-            self.iter_update.emit(idx, iteration+1, dx_mm, -dy_mm, error)
+            self.iter_update.emit(idx, iteration+1, dx_mm, dy_mm, error)
             self._status(
                 'Mark %d  iter %d/%d  err=%.4f mm  Δx=%.4f  Δy=%.4f' % (
                     idx+1, iteration+1, self.CENTER_MAX_ITER,
@@ -311,7 +311,7 @@ class _RegistrationThread(QThread):
             start_pos = self._corrector.mpos[:2]
 
             self.send_cmd.emit('G91')
-            self.send_cmd.emit('G0 X%.4f Y%.4f' % (-dx_mm, -dy_mm))
+            self.send_cmd.emit('G0 X%.4f Y%.4f' % (dx_mm, dy_mm))
             self.send_cmd.emit('G90')
             time.sleep(0.20)   # let Qt deliver queued signals before polling
 
