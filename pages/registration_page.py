@@ -204,7 +204,6 @@ class _RegistrationThread(QThread):
 
         # Safety clamp: keep both axes in positive machine space
         target_x = max(0.5, target_x)
-        target_y = max(0.5, target_y)
 
         # If the knife is already within 0.1 mm of the target, add a tiny
         # nudge so GRBL actually executes a move (zero-distance moves are
