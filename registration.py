@@ -42,7 +42,7 @@ SCAN_RESULT_BIAS_Y_MM = 0
 BLOB_DARK_MAX  = 50    # grayscale threshold (matches regdetect.py)
 BLOB_MIN_AREA  = 200000 # pixels² minimum   (matches regdetect.py)
 BLOB_MAX_AREA  = 900000 # pixels² maximum   (matches regdetect.py)
-BLOB_MIN_ROUND = 0.7    # circularity 0-1   (matches regdetect.py)
+BLOB_MIN_ROUND = 0.3    # circularity 0-1   (matches regdetect.py)
 BLUR_KERNEL    = (5, 5) # GaussianBlur before threshold
 MAX_PX_OFFSET  = 800    # pixels - allow larger offset for 1920px frame
 
