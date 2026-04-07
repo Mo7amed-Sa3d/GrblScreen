@@ -96,9 +96,9 @@ class _RegistrationThread(QThread):
     done_fail   = pyqtSignal(str)    # error message
 
     # ── Tuning constants ──────────────────────────────────────────────────────
-    CENTER_TOL_MM    = 0.05   # centering convergence threshold (mm)
+    CENTER_TOL_MM    = 0.005   # centering convergence threshold (mm)
     CENTER_MAX_ITER  = 10      # max centering iterations per mark
-    COARSE_TOL_MM    = 0.15   # coarse move arrival tolerance (mm)
+    COARSE_TOL_MM    = 0.015   # coarse move arrival tolerance (mm)
     SETTLE_MOVE_MIN  = 0.010  # min position change to count as "started moving"
     SETTLE_STABLE    = 0.005  # max drift per 50 ms to count as "settled"
     SETTLE_STABLE_N  = 3      # consecutive stable readings needed
