@@ -64,6 +64,7 @@ class GrblConnection(QObject):
         self.state = 'Disconnected'
         self.mpos  = (0.0, 0.0, 0.0)
         self.feed  = (0.0, 0.0)
+        self._last_msg   = ''   # last [MSG:...] content — polled by background threads
 
         self._port.readyRead.connect(self._on_data)
         self._port.errorOccurred.connect(self._on_error)
@@ -113,6 +114,14 @@ class GrblConnection(QObject):
         """
         return len(self._cmd_q) == 0 and self._in_flight == 0
 
+    def clear_last_msg(self):
+        """Clear the last-MSG buffer before sending a blocking command."""
+        self._last_msg = ''
+
+    def last_msg_contains(self, text):
+        """True if the last [MSG:...] received contains text. GIL-safe."""
+        return text in self._last_msg
+
     @staticmethod
     def available_ports():
         return [(i.portName(), i.description())
@@ -144,15 +153,8 @@ class GrblConnection(QObject):
         if self._port.isOpen():
             self._port.write(bytes([byte]))
 
-    def feed_hold(self):
-        print("DEBUG: feed_hold() called from", end=" ")
-        import traceback; traceback.print_stack(limit=5)
-        self.send_rt(0x21)
-
-    def cycle_start(self):
-        print("DEBUG: cycle_start() called from", end=" ")
-        import traceback; traceback.print_stack(limit=5)
-        self.send_rt(0x7E)
+    def feed_hold(self):    self.send_rt(0x21)   # '!'
+    def cycle_start(self):  self.send_rt(0x7E)   # '~'
     def cancel_jog(self):   self.send_rt(0x85)
 
     def reset(self):
@@ -250,7 +252,9 @@ class GrblConnection(QObject):
             return
 
         if line.startswith('[MSG:'):
-            self.message_received.emit(line[5:].rstrip(']'))
+            content = line[5:].rstrip(']')
+            self._last_msg = content          # polled by _RegistrationThread
+            self.message_received.emit(content)
 
     def _on_error(self, err):
         if err != QSerialPort.NoError:

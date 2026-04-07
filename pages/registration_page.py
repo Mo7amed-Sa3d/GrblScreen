@@ -96,7 +96,7 @@ class _RegistrationThread(QThread):
     done_fail   = pyqtSignal(str)    # error message
 
     # ── Tuning constants ──────────────────────────────────────────────────────
-    CENTER_TOL_MM    = 0.005   # centering convergence threshold (mm)
+    CENTER_TOL_MM    = 0.05   # centering convergence threshold (mm)
     CENTER_MAX_ITER  = 10      # max centering iterations per mark
     COARSE_TOL_MM    = 0.015   # coarse move arrival tolerance (mm)
     SETTLE_MOVE_MIN  = 0.010  # min position change to count as "started moving"
@@ -132,10 +132,13 @@ class _RegistrationThread(QThread):
         self._set_step(1, 'FEEDING…', '#2196f3')
         self._status('Feeding paper: %s' % cmd, '#aaa')
 
+        # Clear stale MSG before sending so we don't match a leftover
+        self._corrector._grbl.clear_last_msg()
+
         self.send_cmd.emit(cmd)
         time.sleep(0.5)
 
-        if not self._wait_queue_clear(timeout=180.0):
+        if not self._wait_m100_complete(timeout=180.0):
             self.done_fail.emit(
                 'Paper feed timed out after 180 s.\n'
                 'Check sensors, motors, and M100 firmware.')
@@ -160,28 +163,47 @@ class _RegistrationThread(QThread):
                 'Check end-stops, wiring, and GRBL $H settings.')
             return
 
+        # G92.1 clears the G92 temporary offset left by the previous run's
+        # _apply() step (G92 X0 Y0 at mark-1 position).  Without this, the
+        # work coordinate after pull-off differs from machine coordinate by
+        # the stored offset, causing the coarse-move target to appear 2 mm off.
+        self.send_cmd.emit('G92.1')
+        time.sleep(0.1)   # G92.1 is instant; one serial round-trip is enough
+
         self._set_step(0, 'HOMED ✓', '#4caf50')
         self.prog_val.emit(10)
         if self._stop_flag: return
 
         # ── Steps 2-5: Scan each mark ─────────────────────────────────────────
+        # Open the camera ONCE for all 4 marks.  Keeping it open means AE/AWB
+        # stays stable across every centering iteration — no per-mark cold start.
         actual_pts = []
 
-        for mark_idx in range(4):
-            if self._stop_flag: return
+        cam_err = reg.open_camera()
+        if cam_err:
+            self.done_fail.emit('Camera open failed: %s' % cam_err)
+            return
 
-            self._set_step(mark_idx + 2, 'MOVING…', '#2196f3')
-            result = self._scan_one_mark(mark_idx)
+        try:
+            for mark_idx in range(4):
+                if self._stop_flag: return
 
-            if result is None:
-                return   # error already emitted inside _scan_one_mark
+                self._set_step(mark_idx + 2, 'MOVING…', '#2196f3')
+                result = self._scan_one_mark(mark_idx)
 
-            wx, wy = result
-            actual_pts.append((wx, wy))
-            self._set_step(mark_idx + 2,
-                           '(%.2f, %.2f) ✓' % (wx, wy),
-                           '#4caf50')
-            self.prog_val.emit(18 + (mark_idx + 1) * 19)   # 37 55 74 93 → ~100
+                if result is None:
+                    return   # error already emitted inside _scan_one_mark
+
+                wx, wy = result
+                actual_pts.append((wx, wy))
+                self._set_step(mark_idx + 2,
+                               '(%.2f, %.2f) ✓' % (wx, wy),
+                               '#4caf50')
+                self.prog_val.emit(18 + (mark_idx + 1) * 19)
+
+        finally:
+            # Always close camera — whether all 4 marks succeeded or not
+            reg.close_camera()
 
         # ── Finished ──────────────────────────────────────────────────────────
         self.prog_val.emit(100)
@@ -259,7 +281,7 @@ class _RegistrationThread(QThread):
                            '#e65100')
 
             # ── Capture ───────────────────────────────────────────────────────
-            bgr, gray, cap_err = reg.capture_frame()
+            bgr, gray, cap_err = reg.capture_frame_open()
             if gray is None:
                 self.done_fail.emit(
                     'Mark %d, iter %d: camera error: %s'
@@ -339,6 +361,29 @@ class _RegistrationThread(QThread):
         return world_x, world_y
 
     # ── Motion helpers (position-based, never GRBL state) ─────────────────────
+
+
+    def _wait_m100_complete(self, timeout=180.0):
+        """
+        Wait for M100 paper-feed firmware command to finish.
+
+        M100 runs a multi-phase sensor sequence on the ESP32.  When done it
+        sends:  [MSG:M100 Complete — paper registered, Y+Z zeroed]
+
+        Primary  : _last_msg contains 'M100 Complete'  — instant exact signal
+        Fallback : all_commands_acknowledged()          — if MSG text changes
+        Both reads are GIL-safe Python attribute operations.
+        """
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if self._stop_flag:
+                return False
+            if self._corrector._grbl.last_msg_contains('M100 Complete'):
+                return True
+            if self._corrector.all_commands_acknowledged():
+                return True
+            time.sleep(0.1)
+        return False
 
     def _wait_queue_clear(self, timeout=60.0):
         """
@@ -496,10 +541,10 @@ class RegistrationPage(QWidget):
 
         # ── Header ────────────────────────────────────────────────────────────
         hdr = QHBoxLayout()
-        self._btn_back = QPushButton('✕  Skip / Cancel')
+        self._btn_back = QPushButton('✕  Cancel')
         self._btn_back.setProperty('role', 'back')
         self._btn_back.setMinimumHeight(46)
-        self._btn_back.clicked.connect(self._skip)
+        self._btn_back.clicked.connect(self._cancel)
         hdr.addWidget(self._btn_back)
 
         title = QLabel('Registration Marks')
@@ -688,10 +733,24 @@ class RegistrationPage(QWidget):
         # Small delay so GRBL processes the G92 before the cutting starts
         QTimer.singleShot(700, lambda: self._on_complete(True))
 
-    def _skip(self):
-        """Skip registration — proceed without correction."""
+    def _cancel(self):
+        """
+        Cancel registration and abort the entire cut job.
+
+        Sends a GRBL Ctrl-X reset so any running firmware command
+        (e.g. M100 paper feed sequence) stops immediately — not just
+        the Python thread.  Without this the machine stays physically
+        stuck running M100 even after the UI navigates away.
+
+        on_back() routes back to the USB page which, with success=False,
+        calls _stop_all() to abort the whole cut job.
+        """
         if self._thread and self._thread.isRunning():
             self._thread.stop()
+        # Abort any running firmware command on the MCU
+        # reset() sends Ctrl-X (0x18) and clears the command queue
+        self._corrector._grbl.reset()
+        reg.close_camera()   # ensure camera is released
         self._on_back()
 
     # ── Thread signal slots ───────────────────────────────────────────────────

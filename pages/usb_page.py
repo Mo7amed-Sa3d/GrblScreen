@@ -293,11 +293,17 @@ class UsbPage(QWidget):
 
     def on_registration_complete(self, success):
         """
-        Called by main window after each RegistrationPage finishes
-        (success=True) or is skipped (success=False).
-        Either way, proceed with the file send for this repeat.
+        Called by main window after each RegistrationPage finishes.
+
+        success=True  → registration done, proceed with cut
+        success=False → user pressed Cancel, abort the whole job
+                        (also catches any registration failure)
         """
         if self._stopped:
+            return
+        if not success:
+            # Registration was cancelled or failed — abort the cut job
+            self._stop_all()
             return
         self._start_send()
 

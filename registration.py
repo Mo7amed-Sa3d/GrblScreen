@@ -209,6 +209,88 @@ def compute_affine_correction(design_pts, actual_pts):
 
 # ── Camera capture — matching regdetect.py format ────────────────────────────
 
+# ── Camera session ─────────────────────────────────────────────────────────────
+# Open the camera ONCE for the entire 4-mark scan sequence.
+# Calling Picamera2() on every capture restarts AE/AWB from zero, giving a
+# different exposure per iteration and shifting the detected centroid.
+# With a persistent session, AE stabilises after the first 2-second open and
+# stays stable for all subsequent captures.
+#
+# Usage pattern (in the registration thread):
+#   err = reg.open_camera()            # open once; 2 s AE settle
+#   try:
+#       for each mark:
+#           bgr, gray, err = reg.capture_frame_open()
+#   finally:
+#       reg.close_camera()             # always close
+
+_cam_instance = None   # module-level singleton; only one camera at a time
+
+
+def open_camera():
+    """
+    Open Picamera2 at 1920×1920 XRGB and wait 2 s for AE/AWB to converge.
+    Returns None on success, error string on failure.
+    """
+    global _cam_instance
+    if _cam_instance is not None:
+        return None   # already open — reuse
+    try:
+        from picamera2 import Picamera2
+        import time
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(
+            main={"format": "XRGB8888", "size": (1920, 1920)}
+        )
+        picam2.configure(config)
+        picam2.start()
+        # 2.0 s is the minimum for AE/AWB to fully converge after a cold open.
+        # Do NOT reduce — inconsistent exposure is the main cause of centroid jitter.
+        time.sleep(2.0)
+        _cam_instance = picam2
+        return None
+    except ImportError:
+        return 'picamera2 not installed: sudo apt install python3-picamera2'
+    except Exception as e:
+        return 'Camera open error: %s' % str(e)
+
+
+def close_camera():
+    """Close the camera opened by open_camera(). Safe to call multiple times."""
+    global _cam_instance
+    if _cam_instance is not None:
+        try:
+            _cam_instance.stop()
+            _cam_instance.close()
+        except Exception:
+            pass
+        _cam_instance = None
+
+
+def capture_frame_open():
+    """
+    Capture one frame from the already-open camera (see open_camera()).
+    Returns (bgr, gray, error_str).
+
+    Discards one stale buffer frame before capturing, to flush the image
+    that was in the sensor buffer during the previous correction move.
+    """
+    global _cam_instance
+    if _cam_instance is None:
+        return None, None, 'Camera not open — call open_camera() first'
+    try:
+        import cv2, time
+        _cam_instance.capture_array()   # discard stale frame
+        time.sleep(0.05)                # one frame clock period
+        frame = _cam_instance.capture_array()
+        bgr  = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        gray = cv2.cvtColor(bgr,   cv2.COLOR_BGR2GRAY)
+        return bgr, gray, None
+    except Exception as e:
+        return None, None, 'Capture error: %s' % str(e)
+
+
+
 def capture_frame():
     """
     Capture one frame using picamera2 with XRGB8888 format at 1920x1920.
@@ -226,7 +308,7 @@ def capture_frame():
         )
         picam2.configure(config)
         picam2.start()
-        time.sleep(0.5)   # allow AE/AWB to settle
+        time.sleep(2.0)   # full AE/AWB settle (cold open)
 
         frame = picam2.capture_array()
         picam2.stop()
