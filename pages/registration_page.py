@@ -157,7 +157,7 @@ class _RegistrationThread(QThread):
         self.send_cmd.emit('$H')
         time.sleep(0.5)   # give Qt event loop time to deliver the signal
 
-        if not self._wait_queue_clear(timeout=90.0):
+        if not self._wait_queue_clear(timeout=10.0):
             self.done_fail.emit(
                 'Homing timed out after 90 s.\n'
                 'Check end-stops, wiring, and GRBL $H settings.')
@@ -244,7 +244,7 @@ class _RegistrationThread(QThread):
         time.sleep(0.25)   # let Qt deliver the queued signals
 
         ok = self._wait_position(target_x, target_y,
-                                 tol=self.COARSE_TOL_MM, timeout=5.0)
+                                 tol=self.COARSE_TOL_MM, timeout=3.0)
         if not ok:
             self._status(
                 'Mark %d: coarse move timeout — proceeding with centering' % (idx+1),

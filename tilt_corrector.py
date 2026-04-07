@@ -25,7 +25,7 @@ def _apply(line, corr):
         return line
     nx, ny = corr.apply(words.get('X', 0.0), words.get('Y', 0.0))
     nx = nx + 0.5
-    ny = ny + 2.0
+    ny = ny - 2.0
     out = prefix
     for k, v in words.items():
         if k == 'X':   out += ' X%.4f' % nx
