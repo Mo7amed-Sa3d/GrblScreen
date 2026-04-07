@@ -24,8 +24,6 @@ def _apply(line, corr):
     if 'X' not in words and 'Y' not in words:
         return line
     nx, ny = corr.apply(words.get('X', 0.0), words.get('Y', 0.0))
-    nx = nx + 0.2
-    ny = ny - 1.5
     out = prefix
     for k, v in words.items():
         if k == 'X':   out += ' X%.4f' % nx
