@@ -147,11 +147,15 @@ class AffineCorrection:
     """
     def __init__(self, a=1.0, b=0.0, tx=0.0,
                        c=0.0, d=1.0, ty=0.0,
-                 active=False, residual_mm=0.0):
+                 active=False, residual_mm=0.0
+                 ,actual_x=0.0, actual_y = 0.0):
         self.a = a; self.b = b; self.tx = tx
         self.c = c; self.d = d; self.ty = ty
         self.active      = active
         self.residual_mm = residual_mm
+        self.actual_x = actual_x
+        self.actual_y = actual_y
+
 
     def apply(self, x, y):
         if not self.active:
@@ -198,7 +202,7 @@ def compute_affine_correction(design_pts, actual_pts):
     ) / 4.0)
 
     corr = AffineCorrection(a=a, b=b, tx=tx, c=c, d=d, ty=ty,
-                            active=True, residual_mm=rms)
+                            active=True, residual_mm=rms, actual_x=actual_pts[0][0], actual_y=actual_pts[0][1])
     logging.info('Affine correction: %s', corr.summary())
 
     warn = None

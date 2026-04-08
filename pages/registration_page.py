@@ -155,20 +155,20 @@ class _RegistrationThread(QThread):
         self.prog_val.emit(2)
 
         self.send_cmd.emit('$H')
-        time.sleep(0.5)   # give Qt event loop time to deliver the signal
+        time.sleep(3)   # give Qt event loop time to deliver the signal
 
-        if not self._wait_queue_clear(timeout=10.0):
-            self.done_fail.emit(
-                'Homing timed out after 90 s.\n'
-                'Check end-stops, wiring, and GRBL $H settings.')
-            return
+        # if not self._wait_queue_clear(timeout=10.0):
+        #     self.done_fail.emit(
+        #         'Homing timed out after 90 s.\n'
+        #         'Check end-stops, wiring, and GRBL $H settings.')
+        #     return
 
         # G92.1 clears the G92 temporary offset left by the previous run's
         # _apply() step (G92 X0 Y0 at mark-1 position).  Without this, the
         # work coordinate after pull-off differs from machine coordinate by
         # the stored offset, causing the coarse-move target to appear 2 mm off.
-        self.send_cmd.emit('G92.1')
-        time.sleep(0.1)   # G92.1 is instant; one serial round-trip is enough
+        # self.send_cmd.emit('G92.1')
+        # time.sleep(0.1)   # G92.1 is instant; one serial round-trip is enough
 
         self._set_step(0, 'HOMED ✓', '#4caf50')
         self.prog_val.emit(10)
@@ -719,8 +719,8 @@ class RegistrationPage(QWidget):
         wx1, wy1 = self._actual[0]
         self._corrector._grbl.send('G0 X%.4f Y%.4f' % (wx1, wy1))
 
-        # Set job origin: centre of mark 1 = (0, 0)
-        self._corrector._grbl.send('G92 X0 Y0')
+        # # Set job origin: centre of mark 1 = (0, 0)
+        # self._corrector._grbl.send('G92 X0 Y0')
 
         rms_str = '%.3f mm' % corr.residual_mm
         self._update_badge('ARMED  RMS ' + rms_str, '#4caf50')
