@@ -14,7 +14,7 @@ from PyQt5.QtCore import Qt, pyqtSlot
 # Default jog step sizes (mm)
 STEPS = ['0.1', '1', '10', '50']
 DEFAULT_STEP = 2        # index into STEPS → 10mm
-DEFAULT_SPEED = 2000.0  # mm/min
+DEFAULT_SPEED = 8000.0  # mm/min
 
 
 class DashboardPage(QWidget):
