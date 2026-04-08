@@ -25,7 +25,7 @@ def _apply(line, corr):
         return line
     old_x,old_y = words.get('X', 0.0), words.get('Y', 0.0)
     old_x += corr.actual_x - 3.0  # compensate for mark-1 offset from knife tip
-    old_y += corr.actual_y - 1.5
+    old_y += corr.actual_y - 1.6
     nx, ny = corr.apply(old_x, old_y)
     out = prefix
     for k, v in words.items():
